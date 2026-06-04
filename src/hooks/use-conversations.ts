@@ -12,6 +12,37 @@ export function useConversations() {
   const [loading, setLoading] = useState(true);
   const localPeerIdRef = useRef<string | null>(null);
   const openPeerIdRef = useRef<string | null>(null);
+  const messagesByPeerRef = useRef(messagesByPeer);
+  messagesByPeerRef.current = messagesByPeer;
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+
+  function mergeMessage(existing: Message | undefined, incoming: Message): Message {
+    if (!existing) return incoming;
+    return {
+      ...incoming,
+      readAt: existing.readAt ?? incoming.readAt ?? null,
+      deliveredAt: existing.deliveredAt ?? incoming.deliveredAt ?? null,
+      pending: incoming.pending && existing.pending,
+    };
+  }
+
+  function upsertMessage(list: Message[], incoming: Message): Message[] {
+    const idx = list.findIndex((m) => m.id === incoming.id);
+    if (idx < 0) return [...list, incoming];
+    const merged = mergeMessage(list[idx], incoming);
+    if (
+      list[idx]!.readAt === merged.readAt &&
+      list[idx]!.deliveredAt === merged.deliveredAt &&
+      list[idx]!.pending === merged.pending &&
+      list[idx]!.body === merged.body
+    ) {
+      return list;
+    }
+    const next = [...list];
+    next[idx] = merged;
+    return next;
+  }
 
   const refreshContacts = useCallback(async () => {
     try {
@@ -43,16 +74,21 @@ export function useConversations() {
 
   const markAsRead = useCallback(async (peerId: string) => {
     try {
-      let hadUnread = false;
+      const conv = conversationsRef.current.find((c) => c.peerId === peerId);
+      const list = messagesByPeerRef.current[peerId] ?? [];
+      const needsMark =
+        (conv?.unreadCount ?? 0) > 0 ||
+        list.some((m) => !m.outgoing && !m.readAt && m.kind !== "call");
+      if (!needsMark) return;
+
+      const readAt = Date.now();
       setMessagesByPeer((prev) => {
-        const list = prev[peerId];
-        if (!list) return prev;
+        const msgs = prev[peerId];
+        if (!msgs) return prev;
         let changed = false;
-        const readAt = Date.now();
-        const next = list.map((m) => {
+        const next = msgs.map((m) => {
           if (!m.outgoing && !m.readAt && m.kind !== "call") {
             changed = true;
-            hadUnread = true;
             return { ...m, readAt };
           }
           return m;
@@ -60,17 +96,11 @@ export function useConversations() {
         if (!changed) return prev;
         return { ...prev, [peerId]: next };
       });
-      setConversations((prev) => {
-        const conv = prev.find((c) => c.peerId === peerId);
-        if (!conv || (conv.unreadCount ?? 0) === 0) {
-          return prev;
-        }
-        hadUnread = true;
-        return prev.map((c) =>
+      setConversations((prev) =>
+        prev.map((c) =>
           c.peerId === peerId ? { ...c, unreadCount: 0 } : c
-        );
-      });
-      if (!hadUnread) return;
+        )
+      );
 
       await api.markConversationRead(peerId);
       void refreshContacts();
@@ -85,24 +115,31 @@ export function useConversations() {
 
   useEffect(() => {
     const unlistenMsg = api.onMessageReceived((msg) => {
-      setMessagesByPeer((prev) => ({
-        ...prev,
-        [msg.peerId]: [...(prev[msg.peerId] ?? []), msg],
-      }));
+      let isNew = false;
+      setMessagesByPeer((prev) => {
+        const list = prev[msg.peerId] ?? [];
+        isNew = !list.some((m) => m.id === msg.id);
+        const next = upsertMessage(list, msg);
+        if (next === list) return prev;
+        return { ...prev, [msg.peerId]: next };
+      });
       setConversations((prev) =>
-        prev.map((c) =>
-          c.peerId === msg.peerId
-            ? {
-                ...c,
-                lastMessage: msg.body,
-                lastMessageAt: msg.sentAt,
-                unreadCount:
-                  openPeerIdRef.current === msg.peerId || msg.kind === "call"
-                    ? 0
-                    : (c.unreadCount ?? 0) + 1,
-              }
-            : c
-        )
+        prev.map((c) => {
+          if (c.peerId !== msg.peerId) return c;
+          const threadOpen = openPeerIdRef.current === msg.peerId;
+          let unreadCount = c.unreadCount ?? 0;
+          if (threadOpen) {
+            unreadCount = 0;
+          } else if (isNew && msg.kind !== "call") {
+            unreadCount += 1;
+          }
+          return {
+            ...c,
+            lastMessage: msg.body,
+            lastMessageAt: msg.sentAt,
+            unreadCount,
+          };
+        })
       );
       if (openPeerIdRef.current === msg.peerId) {
         if (msg.kind !== "call") {
@@ -208,9 +245,6 @@ export function useConversations() {
     await refreshContacts();
   }, [refreshContacts]);
 
-  const conversationsRef = useRef(conversations);
-  conversationsRef.current = conversations;
-
   const loadMessages = useCallback(async (peerId: string) => {
     const conv = conversationsRef.current.find((c) => c.peerId === peerId);
     if (conv) {
@@ -220,14 +254,27 @@ export function useConversations() {
     const msgs = await api.listMessages(peerId);
     setMessagesByPeer((prev) => {
       const existing = prev[peerId];
-      if (
-        existing &&
-        existing.length === msgs.length &&
-        existing.every((m, i) => m.id === msgs[i]?.id)
-      ) {
-        return prev;
+      if (!existing?.length) {
+        return { ...prev, [peerId]: msgs };
       }
-      return { ...prev, [peerId]: msgs };
+      const localById = new Map(existing.map((m) => [m.id, m]));
+      let changed = existing.length !== msgs.length;
+      const merged = msgs.map((server) => {
+        const local = localById.get(server.id);
+        const next = mergeMessage(local, server);
+        if (
+          local &&
+          local.readAt === next.readAt &&
+          local.deliveredAt === next.deliveredAt &&
+          local.body === next.body
+        ) {
+          return local;
+        }
+        changed = true;
+        return next;
+      });
+      if (!changed) return prev;
+      return { ...prev, [peerId]: merged };
     });
     if (openPeerIdRef.current === peerId) {
       await markAsRead(peerId);

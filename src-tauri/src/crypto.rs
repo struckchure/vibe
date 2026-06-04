@@ -332,9 +332,12 @@ pub fn ingest_wire_chat(
         call_outcome: None,
         call_duration_ms: None,
     };
-    store.insert_message(&msg)?;
-    let _ = app.emit("message-received", message_emit_payload(&msg));
-    Ok(Some(msg))
+    let is_new = store.insert_message(&msg)?;
+    if is_new {
+        let _ = app.emit("message-received", message_emit_payload(&msg));
+        return Ok(Some(msg));
+    }
+    Ok(None)
 }
 
 pub fn persist_outgoing_message(
@@ -361,7 +364,7 @@ pub fn persist_outgoing_message(
         call_outcome: None,
         call_duration_ms: None,
     };
-    store.insert_message(&msg)?;
+    let _ = store.insert_message(&msg)?;
     Ok(msg)
 }
 

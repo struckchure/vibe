@@ -223,7 +223,9 @@ impl EphemeralStore {
             .get(peer_id)
             .map(|list| {
                 list.iter()
-                    .filter(|m| !m.outgoing && m.read_at.is_none())
+                    .filter(|m| {
+                        !m.outgoing && m.read_at.is_none() && m.kind != "call"
+                    })
                     .count() as u32
             })
             .unwrap_or(0)
@@ -268,19 +270,34 @@ impl EphemeralStore {
         self.save_contacts()
     }
 
-    pub fn insert_message(&mut self, msg: &MessageRow) -> Result<()> {
+    pub fn insert_message(&mut self, msg: &MessageRow) -> Result<bool> {
         let list = self.messages.entry(msg.peer_id.clone()).or_default();
-        if let Some(existing) = list.iter_mut().find(|m| m.id == msg.id) {
-            *existing = msg.clone();
+        let is_new = if let Some(existing) = list.iter_mut().find(|m| m.id == msg.id) {
+            existing.body = msg.body.clone();
+            existing.sent_at = msg.sent_at;
+            existing.conversation_id = msg.conversation_id.clone();
+            existing.outgoing = msg.outgoing;
+            existing.kind = msg.kind.clone();
+            existing.call_media = msg.call_media.clone();
+            existing.call_outcome = msg.call_outcome.clone();
+            existing.call_duration_ms = msg.call_duration_ms;
+            existing.delivered_at = existing.delivered_at.or(msg.delivered_at);
+            existing.read_at = existing.read_at.or(msg.read_at);
+            if !msg.pending {
+                existing.pending = false;
+            }
+            false
         } else {
             list.push(msg.clone());
-        }
+            true
+        };
         if let Some(contact) = self.contacts.get_mut(&msg.peer_id) {
             contact.last_message = Some(msg.body.clone());
             contact.last_message_at = Some(msg.sent_at);
             self.save_contacts()?;
         }
-        self.save_messages(&msg.peer_id)
+        self.save_messages(&msg.peer_id)?;
+        Ok(is_new)
     }
 
     pub fn list_messages(&self, peer_id: &str) -> Vec<MessageRow> {
@@ -314,7 +331,7 @@ impl EphemeralStore {
             call_outcome: Some(outcome.to_string()),
             call_duration_ms: duration_ms,
         };
-        self.insert_message(&msg)?;
+        let _ = self.insert_message(&msg)?;
         Ok(msg)
     }
 
