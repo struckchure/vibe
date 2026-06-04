@@ -170,7 +170,8 @@ export function ChatLayout() {
         {overlayPeers === 0 ? (
           <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
             Offline — you can still send messages; they will deliver when you
-            reconnect (join the same room on both devices to discover each other).
+            reconnect. Join a room with the same code as your contacts to
+            discover them on the network.
           </p>
         ) : null}
         {isDesktop ? (

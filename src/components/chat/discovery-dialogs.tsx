@@ -186,8 +186,8 @@ export function DiscoveryDialogs({
                 className="font-mono text-xs"
               />
               <FieldDescription>
-                You can message anyone you add here once both devices are on
-                the network. A room is only needed to discover their peer ID.
+                You can message any contact once you are on the network. Use
+                a room only to discover someone's peer ID.
               </FieldDescription>
             </Field>
             <Field>
@@ -237,9 +237,8 @@ export function DiscoveryDialogs({
                   }}
                 />
                 <FieldDescription>
-                  Temporary lobby to find peers on the network. After you add
-                  each other as contacts, you can chat without staying in the
-                  room.
+                  Temporary lobby to discover contacts on the network. After
+                  you add each other, you can chat without staying in the room.
                 </FieldDescription>
               </Field>
             </FieldGroup>
@@ -274,7 +273,7 @@ export function DiscoveryDialogs({
                 <ItemGroup className="gap-1 p-1">
                   {roomPeers.length === 0 ? (
                     <p className="py-4 text-center text-xs text-muted-foreground">
-                      Waiting for peers…
+                      Waiting for others in the room…
                     </p>
                   ) : (
                     roomPeers.map((peer) => (
