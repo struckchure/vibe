@@ -146,6 +146,7 @@ async function dispatchSignaling(
       } catch {
         /* ignore late ICE */
       }
+      return;
     }
     const textPeer = peers.get(remotePeerId);
     if (textPeer?.conversationId === conversationId) {
@@ -445,6 +446,41 @@ export async function ensureCallPeerConnection(
 ): Promise<PeerConnectionState> {
   closeCallPeerConnection(remotePeerId);
   return createCallPeerConnection(localPeerId, remotePeerId, conversationId);
+}
+
+/** Apply the caller's offer on a call PC so ICE can trickle before the callee answers. */
+export async function prepareCallPeerForIncomingOffer(
+  localPeerId: string,
+  remotePeerId: string,
+  conversationId: string,
+  offer: RTCSessionDescriptionInit
+): Promise<PeerConnectionState> {
+  let state = callPeers.get(remotePeerId);
+  if (!state || state.conversationId !== conversationId) {
+    closeCallPeerConnection(remotePeerId);
+    state = await createCallPeerConnection(
+      localPeerId,
+      remotePeerId,
+      conversationId
+    );
+  }
+
+  if (state.pc.signalingState === "have-remote-offer") {
+    return state;
+  }
+  if (state.pc.signalingState === "stable") {
+    await state.pc.setRemoteDescription(offer);
+    return state;
+  }
+
+  closeCallPeerConnection(remotePeerId);
+  state = await createCallPeerConnection(
+    localPeerId,
+    remotePeerId,
+    conversationId
+  );
+  await state.pc.setRemoteDescription(offer);
+  return state;
 }
 
 export async function ensureTextTransport(

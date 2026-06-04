@@ -1,6 +1,9 @@
+import { useEffect } from "react";
+
 import { CallOverlay } from "@/components/call/call-overlay";
 import { IncomingCallDialog } from "@/components/call/incoming-call-dialog";
 import { useCallContext } from "@/contexts/call-context";
+import { stopIncomingRingtone } from "@/lib/call-ringtone";
 
 /** Global incoming/active call UI — mounted at app root so iOS always shows invites. */
 export function CallShell() {
@@ -14,6 +17,12 @@ export function CallShell() {
 
   const showIncoming =
     call.active?.phase === "incoming" && call.pendingIncoming;
+
+  useEffect(() => {
+    if (!showIncoming) {
+      stopIncomingRingtone();
+    }
+  }, [showIncoming]);
 
   return (
     <>
