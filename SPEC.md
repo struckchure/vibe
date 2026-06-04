@@ -108,6 +108,8 @@ flowchart TB
 - Each human operator has a **root identity**: an Ed25519 keypair generated on-device.
 - **Peer ID** — The canonical identifier is the 32-byte Ed25519 public key, encoded for display as base64url (no padding) or multibase per implementation preference. Implementations MUST use the raw public key bytes for protocol logic.
 - Private keys MUST remain in the Rust core (OS secure storage where available). They MUST NOT be exported to the webview or IPFS.
+- **Desktop persistence (Vibe app):** the keypair is stored as `identity.json` (`vibe-identity/1`: base64url `publicKey` + `privateKey`). Users may export/import this JSON for account recovery.
+- **Invite URI:** `vibe://peer/<publicKey>` — public key only; used in QR codes and share links.
 
 ### 5.2 Profile Document
 
@@ -125,6 +127,27 @@ flowchart TB
 
 - v1 treats one device as **primary** per root identity on a given installation.
 - **Multi-device** (device sub-keys signed by root, cross-device history sync) is specified in Appendix A.4 as a future capability; v1 implementations MUST NOT claim cross-device E2EE sync.
+
+### 5.5 Room-Scoped Discovery
+
+- **Room codes** are shared secrets (6–8 alphanumeric characters), not usernames. Clients MUST NOT expose a global searchable directory.
+- **Topic derivation**: `room_topic = "vibe/room/" + hex(SHA-256("vibe-room-v1" || uppercase(trim(code))))`.
+- While joined to a room, clients MUST publish signed **announce** messages on `room_topic` at a bounded interval (recommended: every 5 seconds) and MUST stop when leaving the room.
+- **Announce schema** `vibe/announce/1` (JSON, camelCase on wire):
+
+```json
+{
+  "type": "vibe/announce/1",
+  "peerId": "<base64url Ed25519 pubkey>",
+  "displayName": "<ephemeral string>",
+  "expiresAt": "<unix ms>",
+  "signature": "<base64url Ed25519 signature over canonical payload>"
+}
+```
+
+- The signed payload MUST exclude `signature` and MUST use the same field order as above.
+- Recipients MUST reject announces with invalid signatures, expired `expiresAt`, or `peerId` equal to self.
+- **Room → contact flow (Option A)**: Room membership grants discovery only; 1:1 messaging requires adding the peer as a contact (§5.3).
 
 ---
 
@@ -217,6 +240,7 @@ Encoding **SHOULD** be CBOR for canonical hashing; JSON MAY be accepted for debu
 
 - **MUST** use an ordered, reliable SCTP data channel per 1:1 peer connection (labeled `vibe/text`).
 - Application frames **MUST** be length-prefixed CBOR envelopes (§15.2) containing `protocol_version`, `conversation_id`, `seq`, and ciphertext produced by the session keys (§6).
+- **Vibe v1 reference:** the desktop/mobile client uses JSON `WireChat` on the data channel and gossipsub (same ciphertext layout as §6); CBOR length-prefixing is a follow-up.
 
 ### 8.3 Voice and Video
 
