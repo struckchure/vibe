@@ -44,6 +44,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { isCallMessage } from "@/lib/call-history";
 import { cn } from "@/lib/utils";
 import type { Conversation, Message } from "@/types/chat";
+import { platform } from "@tauri-apps/plugin-os";
 
 type ChatThreadProps = {
   conversation: Conversation;
@@ -102,9 +103,17 @@ export function ChatThread({
     }
   }
 
+  const currentPlatform = platform();
+
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-3 sticky top-2 bg-background z-10">
+      <header
+        className={cn(
+          "flex shrink-0 items-center gap-3 border-b px-4 py-1.5",
+          ["ios", "android"].includes(currentPlatform) &&
+            "sticky top-2 bg-background z-10",
+        )}
+      >
         {onBack ? (
           <Button
             variant="ghost"
