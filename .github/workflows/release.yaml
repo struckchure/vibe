@@ -1,4 +1,4 @@
-name: "Desktop Release"
+name: Release
 
 on:
   workflow_dispatch:
@@ -14,35 +14,66 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest" # for Arm based macs (M1 and above).
+          - platform: macos-latest
             args: "--target aarch64-apple-darwin"
-          - platform: "macos-latest" # for Intel based macs.
+          - platform: macos-latest
             args: "--target x86_64-apple-darwin"
-          - platform: "ubuntu-22.04"
+          - platform: ubuntu-22.04
             args: ""
-          - platform: "ubuntu-22.04-arm" # Only available in public repos.
+          - platform: ubuntu-22.04-arm
             args: ""
-          - platform: "windows-latest"
+          - platform: windows-latest
             args: ""
+          - platform: ubuntu-22.04
+            mobile: android
+            args: "--apk"
+            targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          - platform: macos-latest
+            mobile: ios
+            args: "--no-sign"
+            targets: aarch64-apple-ios
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04' || matrix.platform == 'ubuntu-22.04-arm' # This must match the platform value defined above.
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: setup Java (Android)
+        if: matrix.mobile == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: setup Android NDK
+        if: matrix.mobile == 'android'
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: setup Android SDK
+        if: matrix.mobile == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: install dependencies (ubuntu desktop)
+        if: matrix.platform == 'ubuntu-22.04' && matrix.mobile != 'android'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: setup bun
-        uses: oven-sh/setup-bun@v2
+      - name: install dependencies (ubuntu arm desktop)
+        if: matrix.platform == 'ubuntu-22.04-arm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@stable
         with:
-          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.targets || (matrix.platform == 'macos-latest' && matrix.mobile != 'ios' && 'aarch64-apple-darwin,x86_64-apple-darwin') || '' }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -52,13 +83,24 @@ jobs:
       - name: install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - uses: tauri-apps/tauri-action@v0
+      # v0 tag does not include `mobile` yet; dev branch builds Android APK + iOS IPA.
+      - uses: tauri-apps/tauri-action@dev
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI: "true"
+          NDK_HOME: ${{ matrix.mobile == 'android' && steps.setup-ndk.outputs.ndk-path || '' }}
         with:
-          tagName: app-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
+          tagName: app-v__VERSION__
           releaseName: "App v__VERSION__"
-          releaseBody: "See the assets to download this version and install."
+          releaseBody: |
+            Desktop installers and mobile builds for this version.
+
+            - **Android**: universal APK (`--apk`). For Play Store distribution, sign with your release keystore (optional repo secrets below).
+            - **iOS**: IPA built with `--no-sign` for CI; install via Xcode, AltStore, or re-sign with your Apple Developer account.
           releaseDraft: false
           prerelease: false
+          tauriScript: bun run tauri
+          mobile: ${{ matrix.mobile || '' }}
           args: ${{ matrix.args }}
+          uploadUpdaterJson: ${{ matrix.mobile == '' }}
+          uploadUpdaterSignatures: ${{ matrix.mobile == '' }}
