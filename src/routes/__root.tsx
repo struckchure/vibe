@@ -2,6 +2,7 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { platform } from "@tauri-apps/plugin-os";
 
 import { cn } from "@/lib/utils";
+import { AppProviders } from "@/providers/app-providers";
 import appCss from "@/styles.css?url";
 
 export const Route = createRootRoute({
@@ -28,7 +29,9 @@ function RootLayout() {
         ["android", "ios"].includes(currentPlatform) && "mt-12",
       )}
     >
-      <Outlet />
+      <AppProviders>
+        <Outlet />
+      </AppProviders>
     </main>
   );
 }

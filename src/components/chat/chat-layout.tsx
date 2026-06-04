@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChatEmpty } from "@/components/chat/chat-empty";
 import { ChatList } from "@/components/chat/chat-list";
@@ -10,18 +10,20 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { useConversations } from "@/hooks/use-conversations";
+import { useCallContext } from "@/contexts/call-context";
+import { useConversationsContext } from "@/contexts/conversations-context";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { useOverlayPeers } from "@/hooks/use-overlay-peers";
+import { useTextChannelOpen } from "@/hooks/use-text-channel";
 import * as api from "@/lib/tauri";
-import { closeTextTransport, ensureTextTransport, isTextChannelOpen } from "@/lib/webrtc";
+import { closeTextTransport, ensureTextTransport } from "@/lib/webrtc";
 
 export function ChatLayout() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addContactOpen, setAddContactOpen] = useState(false);
   const [joinRoomOpen, setJoinRoomOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
-  const [dcOpen, setDcOpen] = useState(false);
-  const [overlayPeers, setOverlayPeers] = useState(0);
+  const overlayPeers = useOverlayPeers();
 
   const {
     conversations,
@@ -31,25 +33,11 @@ export function ChatLayout() {
     sendMessage,
     removeContact,
     setOpenPeerId,
-    markAsRead,
     getLocalPeerId,
-  } = useConversations();
+  } = useConversationsContext();
 
-  useEffect(() => {
-    void (async () => {
-      await api.startNetwork();
-      setOverlayPeers(await api.overlayPeerCount());
-    })();
-    const unlisten = api.onOverlayPeersChanged((count) => {
-      setOverlayPeers(count);
-      if (count > 0) {
-        void api.flushOutbox();
-      }
-    });
-    return () => {
-      void unlisten.then((fn) => fn());
-    };
-  }, []);
+  const { isBusy: callBusy, startVoiceCall, startVideoCall, endCall: endActiveCall } =
+    useCallContext();
 
   useEffect(() => {
     const unlisten = api.onIdentityChanged(() => {
@@ -76,54 +64,37 @@ export function ChatLayout() {
     [conversations, selectedId],
   );
 
-  useEffect(() => {
-    if (!selected) {
-      setDcOpen(false);
-      return;
-    }
-    const tick = () => setDcOpen(isTextChannelOpen(selected.peerId));
-    tick();
-    const interval = setInterval(tick, 1500);
-    return () => clearInterval(interval);
-  }, [selected]);
+  const selectedPeerId = useMemo(
+    () => conversations.find((c) => c.id === selectedId)?.peerId ?? null,
+    [conversations, selectedId]
+  );
+
+  const textChannelOpen = useTextChannelOpen(selectedPeerId);
+
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
 
   const handleSelect = useCallback(
     (id: string) => {
       setSelectedId(id);
-      const conv = conversations.find((c) => c.id === id);
+      const conv = conversationsRef.current.find((c) => c.id === id);
       if (conv) {
         setOpenPeerId(conv.peerId);
         void (async () => {
           const localPeerId = await getLocalPeerId();
           await api.startNetwork();
           await ensureTextTransport(localPeerId, conv.peerId, conv.id);
-          setDcOpen(isTextChannelOpen(conv.peerId));
           await loadMessages(conv.peerId);
         })();
       }
     },
-    [conversations, loadMessages, getLocalPeerId, setOpenPeerId],
+    [loadMessages, getLocalPeerId, setOpenPeerId],
   );
-
-  useEffect(() => {
-    if (!selected) {
-      setOpenPeerId(null);
-      return;
-    }
-    setOpenPeerId(selected.peerId);
-  }, [selected, setOpenPeerId]);
-
-  useEffect(() => {
-    if (!selected) return;
-    const peerId = selected.peerId;
-    void markAsRead(peerId);
-  }, [selected, selected?.peerId, messagesByPeer, markAsRead]);
 
   const handleSend = useCallback(
     async (body: string) => {
       if (!selected) return;
       await sendMessage(selected.peerId, body);
-      setDcOpen(isTextChannelOpen(selected.peerId));
     },
     [selected, sendMessage],
   );
@@ -131,11 +102,14 @@ export function ChatLayout() {
   const handleRemoveContact = useCallback(async () => {
     if (!selected) return;
     const peerId = selected.peerId;
+    if (callBusy) {
+      await endActiveCall();
+    }
     closeTextTransport(peerId);
     setOpenPeerId(null);
     await removeContact(peerId);
     setSelectedId(null);
-  }, [selected, removeContact, setOpenPeerId]);
+  }, [selected, removeContact, setOpenPeerId, callBusy, endActiveCall]);
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
 
@@ -155,12 +129,14 @@ export function ChatLayout() {
         conversation: selected,
         messages: messagesByPeer[selected.peerId] ?? [],
         onSend: handleSend,
-        onLoadMessages: () => loadMessages(selected.peerId),
         onRemoveContact: handleRemoveContact,
+        onVoiceCall: () => void startVoiceCall(selected),
+        onVideoCall: () => void startVideoCall(selected),
+        callBusy,
         transport:
-          dcOpen && overlayPeers > 0
+          textChannelOpen && overlayPeers > 0
             ? ("direct" as const)
-            : ("relay" as const),
+            : ("network" as const),
       }
     : null;
 
@@ -190,7 +166,7 @@ export function ChatLayout() {
             <ResizableHandle withHandle />
             <ResizablePanel id="chat-thread" minSize="70%">
               {threadProps ? (
-                <ChatThread {...threadProps} />
+                <ChatThread key={threadProps.conversation.id} {...threadProps} />
               ) : (
                 <ChatEmpty />
               )}
@@ -198,6 +174,7 @@ export function ChatLayout() {
           </ResizablePanelGroup>
         ) : threadProps ? (
           <ChatThread
+            key={threadProps.conversation.id}
             {...threadProps}
             onBack={() => {
               setOpenPeerId(null);

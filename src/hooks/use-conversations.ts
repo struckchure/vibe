@@ -36,37 +36,48 @@ export function useConversations() {
       setLoading(true);
       localPeerIdRef.current = await api.getPeerId();
       await refreshContacts();
+      await api.startNetwork();
       setLoading(false);
     })();
   }, [refreshContacts]);
 
-  const markAsRead = useCallback(
-    async (peerId: string) => {
-      try {
-        await api.markConversationRead(peerId);
+  const markAsRead = useCallback(async (peerId: string) => {
+    try {
+      let hadUnread = false;
+      setMessagesByPeer((prev) => {
+        const list = prev[peerId];
+        if (!list) return prev;
+        let changed = false;
         const readAt = Date.now();
-        setMessagesByPeer((prev) => {
-          const list = prev[peerId];
-          if (!list) return prev;
-          return {
-            ...prev,
-            [peerId]: list.map((m) =>
-              !m.outgoing && !m.readAt ? { ...m, readAt } : m
-            ),
-          };
+        const next = list.map((m) => {
+          if (!m.outgoing && !m.readAt && m.kind !== "call") {
+            changed = true;
+            hadUnread = true;
+            return { ...m, readAt };
+          }
+          return m;
         });
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.peerId === peerId ? { ...c, unreadCount: 0 } : c
-          )
+        if (!changed) return prev;
+        return { ...prev, [peerId]: next };
+      });
+      setConversations((prev) => {
+        const conv = prev.find((c) => c.peerId === peerId);
+        if (!conv || (conv.unreadCount ?? 0) === 0) {
+          return prev;
+        }
+        hadUnread = true;
+        return prev.map((c) =>
+          c.peerId === peerId ? { ...c, unreadCount: 0 } : c
         );
-        void refreshContacts();
-      } catch {
-        /* ignore when offline */
-      }
-    },
-    [refreshContacts]
-  );
+      });
+      if (!hadUnread) return;
+
+      await api.markConversationRead(peerId);
+      void refreshContacts();
+    } catch {
+      /* ignore when offline */
+    }
+  }, [refreshContacts]);
 
   const setOpenPeerId = useCallback((peerId: string | null) => {
     openPeerIdRef.current = peerId;
@@ -86,7 +97,7 @@ export function useConversations() {
                 lastMessage: msg.body,
                 lastMessageAt: msg.sentAt,
                 unreadCount:
-                  openPeerIdRef.current === msg.peerId
+                  openPeerIdRef.current === msg.peerId || msg.kind === "call"
                     ? 0
                     : (c.unreadCount ?? 0) + 1,
               }
@@ -94,7 +105,9 @@ export function useConversations() {
         )
       );
       if (openPeerIdRef.current === msg.peerId) {
-        void markAsRead(msg.peerId);
+        if (msg.kind !== "call") {
+          void markAsRead(msg.peerId);
+        }
       } else {
         void refreshContacts();
       }
@@ -104,12 +117,16 @@ export function useConversations() {
         setMessagesByPeer((prev) => {
           const list = prev[peerId];
           if (!list) return prev;
-          return {
-            ...prev,
-            [peerId]: list.map((m) =>
-              m.id === messageId ? { ...m, deliveredAt } : m
-            ),
-          };
+          let changed = false;
+          const next = list.map((m) => {
+            if (m.id === messageId && m.deliveredAt !== deliveredAt) {
+              changed = true;
+              return { ...m, deliveredAt };
+            }
+            return m;
+          });
+          if (!changed) return prev;
+          return { ...prev, [peerId]: next };
         });
       }
     );
@@ -118,12 +135,16 @@ export function useConversations() {
         setMessagesByPeer((prev) => {
           const list = prev[peerId];
           if (!list) return prev;
-          return {
-            ...prev,
-            [peerId]: list.map((m) =>
-              m.id === messageId ? { ...m, readAt } : m
-            ),
-          };
+          let changed = false;
+          const next = list.map((m) => {
+            if (m.id === messageId && m.readAt !== readAt) {
+              changed = true;
+              return { ...m, readAt };
+            }
+            return m;
+          });
+          if (!changed) return prev;
+          return { ...prev, [peerId]: next };
         });
       }
     );
@@ -142,17 +163,23 @@ export function useConversations() {
       }
     );
     const unlistenConvRead = api.onConversationRead(({ peerId, readAt }) => {
+      let changed = false;
       setMessagesByPeer((prev) => {
         const list = prev[peerId];
         if (!list) return prev;
-        return {
-          ...prev,
-          [peerId]: list.map((m) =>
-            !m.outgoing && !m.readAt ? { ...m, readAt } : m
-          ),
-        };
+        const next = list.map((m) => {
+          if (!m.outgoing && !m.readAt && m.kind !== "call") {
+            changed = true;
+            return { ...m, readAt };
+          }
+          return m;
+        });
+        if (!changed) return prev;
+        return { ...prev, [peerId]: next };
       });
-      void refreshContacts();
+      if (changed) {
+        void refreshContacts();
+      }
     });
     return () => {
       void unlistenMsg.then((fn) => fn());
@@ -181,18 +208,31 @@ export function useConversations() {
     await refreshContacts();
   }, [refreshContacts]);
 
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+
   const loadMessages = useCallback(async (peerId: string) => {
-    const conv = conversations.find((c) => c.peerId === peerId);
+    const conv = conversationsRef.current.find((c) => c.peerId === peerId);
     if (conv) {
       await api.startNetwork();
       await api.subscribeConversation(conv.id);
     }
     const msgs = await api.listMessages(peerId);
-    setMessagesByPeer((prev) => ({ ...prev, [peerId]: msgs }));
+    setMessagesByPeer((prev) => {
+      const existing = prev[peerId];
+      if (
+        existing &&
+        existing.length === msgs.length &&
+        existing.every((m, i) => m.id === msgs[i]?.id)
+      ) {
+        return prev;
+      }
+      return { ...prev, [peerId]: msgs };
+    });
     if (openPeerIdRef.current === peerId) {
       await markAsRead(peerId);
     }
-  }, [conversations, markAsRead]);
+  }, [markAsRead]);
 
   const sendMessage = useCallback(
     async (peerId: string, body: string) => {

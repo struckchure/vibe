@@ -327,22 +327,13 @@ pub fn ingest_wire_chat(
         pending: false,
         delivered_at: None,
         read_at: None,
+        kind: "text".to_string(),
+        call_media: None,
+        call_outcome: None,
+        call_duration_ms: None,
     };
     store.insert_message(&msg)?;
-    let _ = app.emit(
-        "message-received",
-        serde_json::json!({
-            "id": msg.id,
-            "conversationId": msg.conversation_id,
-            "peerId": msg.peer_id,
-            "body": msg.body,
-            "sentAt": msg.sent_at,
-            "outgoing": false,
-            "pending": false,
-            "deliveredAt": null,
-            "readAt": null,
-        }),
-    );
+    let _ = app.emit("message-received", message_emit_payload(&msg));
     Ok(Some(msg))
 }
 
@@ -365,8 +356,30 @@ pub fn persist_outgoing_message(
         pending,
         delivered_at: None,
         read_at: None,
+        kind: "text".to_string(),
+        call_media: None,
+        call_outcome: None,
+        call_duration_ms: None,
     };
     store.insert_message(&msg)?;
     Ok(msg)
+}
+
+pub fn message_emit_payload(msg: &MessageRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": msg.id,
+        "conversationId": msg.conversation_id,
+        "peerId": msg.peer_id,
+        "body": msg.body,
+        "sentAt": msg.sent_at,
+        "outgoing": msg.outgoing,
+        "pending": msg.pending,
+        "deliveredAt": msg.delivered_at,
+        "readAt": msg.read_at,
+        "kind": msg.kind,
+        "callMedia": msg.call_media,
+        "callOutcome": msg.call_outcome,
+        "callDurationMs": msg.call_duration_ms,
+    })
 }
 

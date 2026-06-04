@@ -37,6 +37,18 @@ pub struct MessageRow {
     pub delivered_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_at: Option<i64>,
+    #[serde(default = "default_message_kind")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_media: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_duration_ms: Option<i64>,
+}
+
+fn default_message_kind() -> String {
+    "text".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +236,7 @@ impl EphemeralStore {
         let now = Self::now_ms();
         let mut ids = Vec::new();
         for msg in list.iter_mut() {
-            if !msg.outgoing && msg.read_at.is_none() {
+            if !msg.outgoing && msg.read_at.is_none() && msg.kind != "call" {
                 msg.read_at = Some(now);
                 ids.push(msg.id.clone());
             }
@@ -272,7 +284,38 @@ impl EphemeralStore {
     }
 
     pub fn list_messages(&self, peer_id: &str) -> Vec<MessageRow> {
-        self.messages.get(peer_id).cloned().unwrap_or_default()
+        let mut list = self.messages.get(peer_id).cloned().unwrap_or_default();
+        list.sort_by_key(|m| m.sent_at);
+        list
+    }
+
+    pub fn insert_call_history(
+        &mut self,
+        peer_id: &str,
+        conversation_id: &str,
+        outgoing: bool,
+        media: &str,
+        outcome: &str,
+        duration_ms: Option<i64>,
+    ) -> Result<MessageRow> {
+        let body = format_call_body(outgoing, media, outcome, duration_ms);
+        let msg = MessageRow {
+            id: format!("call-{:016x}", rand::random::<u64>()),
+            conversation_id: conversation_id.to_string(),
+            peer_id: peer_id.to_string(),
+            body,
+            sent_at: Self::now_ms(),
+            outgoing,
+            pending: false,
+            delivered_at: None,
+            read_at: None,
+            kind: "call".to_string(),
+            call_media: Some(media.to_string()),
+            call_outcome: Some(outcome.to_string()),
+            call_duration_ms: duration_ms,
+        };
+        self.insert_message(&msg)?;
+        Ok(msg)
     }
 
     pub fn list_pending_outgoing(&self) -> Vec<PendingOutbound> {
@@ -352,6 +395,59 @@ impl EphemeralStore {
         let json = serde_json::to_string_pretty(&file)?;
         std::fs::write(&self.contacts_path, json)?;
         Ok(())
+    }
+}
+
+fn format_call_duration(duration_ms: i64) -> String {
+    let total_sec = (duration_ms.max(0) / 1000) as u64;
+    let mins = total_sec / 60;
+    let secs = total_sec % 60;
+    if mins > 0 {
+        format!("{mins}:{secs:02}")
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn format_call_body(
+    outgoing: bool,
+    media: &str,
+    outcome: &str,
+    duration_ms: Option<i64>,
+) -> String {
+    let label = if media == "video" {
+        "Video call"
+    } else {
+        "Voice call"
+    };
+    match outcome {
+        "completed" => {
+            let dur = duration_ms
+                .filter(|d| *d > 0)
+                .map(format_call_duration)
+                .unwrap_or_else(|| "0s".to_string());
+            if outgoing {
+                format!("Outgoing {label} · {dur}")
+            } else {
+                format!("{label} · {dur}")
+            }
+        }
+        "missed" => {
+            if outgoing {
+                format!("Missed {label}")
+            } else {
+                format!("Missed incoming {label}")
+            }
+        }
+        "declined" => {
+            if outgoing {
+                format!("{label} · Declined")
+            } else {
+                format!("Declined incoming {label}")
+            }
+        }
+        "cancelled" => format!("{label} · Cancelled"),
+        _ => label.to_string(),
     }
 }
 

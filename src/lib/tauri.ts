@@ -142,15 +142,38 @@ export async function listMessages(peerId: string): Promise<Message[]> {
   return invoke<Message[]>("list_messages", { peerId });
 }
 
+export async function recordCallHistory(args: {
+  peerId: string;
+  conversationId: string;
+  outgoing: boolean;
+  media: "audio" | "video";
+  outcome: "completed" | "missed" | "declined" | "cancelled";
+  durationMs?: number | null;
+}): Promise<Message> {
+  return invoke<Message>("record_call_history", {
+    peerId: args.peerId,
+    conversationId: args.conversationId,
+    outgoing: args.outgoing,
+    media: args.media,
+    outcome: args.outcome,
+    durationMs: args.durationMs ?? null,
+  });
+}
+
 export async function markConversationRead(peerId: string): Promise<void> {
   return invoke("mark_conversation_read", { peerId });
 }
 
 export async function publishSignaling(
   conversationId: string,
-  payload: string
+  payload: string,
+  waitForDelivery = true
 ): Promise<void> {
-  return invoke("publish_signaling", { conversationId, payload });
+  return invoke("publish_signaling", {
+    conversationId,
+    payload,
+    waitForDelivery,
+  });
 }
 
 export async function prepareWireMessage(

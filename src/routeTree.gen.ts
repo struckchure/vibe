@@ -9,109 +9,50 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as TabsRouteImport } from './routes/_tabs'
-import { Route as TabsIndexRouteImport } from './routes/_tabs/index'
-import { Route as TabsVoiceRouteImport } from './routes/_tabs/voice'
-import { Route as TabsVideoRouteImport } from './routes/_tabs/video'
+import { Route as IndexRouteImport } from './routes/index'
 
-const TabsRoute = TabsRouteImport.update({
-  id: '/_tabs',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TabsIndexRoute = TabsIndexRouteImport.update({
+const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => TabsRoute,
-} as any)
-const TabsVoiceRoute = TabsVoiceRouteImport.update({
-  id: '/voice',
-  path: '/voice',
-  getParentRoute: () => TabsRoute,
-} as any)
-const TabsVideoRoute = TabsVideoRouteImport.update({
-  id: '/video',
-  path: '/video',
-  getParentRoute: () => TabsRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof TabsIndexRoute
-  '/video': typeof TabsVideoRoute
-  '/voice': typeof TabsVoiceRoute
+  '/': typeof IndexRoute
 }
 export interface FileRoutesByTo {
-  '/video': typeof TabsVideoRoute
-  '/voice': typeof TabsVoiceRoute
-  '/': typeof TabsIndexRoute
+  '/': typeof IndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/_tabs': typeof TabsRouteWithChildren
-  '/_tabs/video': typeof TabsVideoRoute
-  '/_tabs/voice': typeof TabsVoiceRoute
-  '/_tabs/': typeof TabsIndexRoute
+  '/': typeof IndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/video' | '/voice'
+  fullPaths: '/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/video' | '/voice' | '/'
-  id: '__root__' | '/_tabs' | '/_tabs/video' | '/_tabs/voice' | '/_tabs/'
+  to: '/'
+  id: '__root__' | '/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  TabsRoute: typeof TabsRouteWithChildren
+  IndexRoute: typeof IndexRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/_tabs': {
-      id: '/_tabs'
-      path: ''
-      fullPath: '/'
-      preLoaderRoute: typeof TabsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/_tabs/': {
-      id: '/_tabs/'
+    '/': {
+      id: '/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof TabsIndexRouteImport
-      parentRoute: typeof TabsRoute
-    }
-    '/_tabs/voice': {
-      id: '/_tabs/voice'
-      path: '/voice'
-      fullPath: '/voice'
-      preLoaderRoute: typeof TabsVoiceRouteImport
-      parentRoute: typeof TabsRoute
-    }
-    '/_tabs/video': {
-      id: '/_tabs/video'
-      path: '/video'
-      fullPath: '/video'
-      preLoaderRoute: typeof TabsVideoRouteImport
-      parentRoute: typeof TabsRoute
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
   }
 }
 
-interface TabsRouteChildren {
-  TabsVideoRoute: typeof TabsVideoRoute
-  TabsVoiceRoute: typeof TabsVoiceRoute
-  TabsIndexRoute: typeof TabsIndexRoute
-}
-
-const TabsRouteChildren: TabsRouteChildren = {
-  TabsVideoRoute: TabsVideoRoute,
-  TabsVoiceRoute: TabsVoiceRoute,
-  TabsIndexRoute: TabsIndexRoute,
-}
-
-const TabsRouteWithChildren = TabsRoute._addFileChildren(TabsRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
-  TabsRoute: TabsRouteWithChildren,
+  IndexRoute: IndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

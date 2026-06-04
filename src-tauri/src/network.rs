@@ -80,6 +80,7 @@ pub enum NetworkCommand {
     PublishSignaling {
         conversation_id: String,
         payload: String,
+        reply: Option<std::sync::mpsc::Sender<Result<(), String>>>,
     },
     PublishMessage {
         conversation_id: String,
@@ -310,10 +311,26 @@ impl NetworkHandle {
     }
 
     pub fn publish_signaling(&self, conversation_id: &str, payload: &str) -> Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
         self.sender()?
             .send(NetworkCommand::PublishSignaling {
                 conversation_id: conversation_id.to_string(),
                 payload: payload.to_string(),
+                reply: Some(tx),
+            })
+            .map_err(|e| anyhow!("{e}"))?;
+        match rx.recv() {
+            Ok(result) => result.map_err(|e| anyhow!("{e}")),
+            Err(_) => Err(anyhow!("network stopped")),
+        }
+    }
+
+    pub fn publish_signaling_best_effort(&self, conversation_id: &str, payload: &str) -> Result<()> {
+        self.sender()?
+            .send(NetworkCommand::PublishSignaling {
+                conversation_id: conversation_id.to_string(),
+                payload: payload.to_string(),
+                reply: None,
             })
             .map_err(|e| anyhow!("{e}"))?;
         Ok(())
@@ -536,18 +553,26 @@ async fn run_swarm(
                             &conversation_id,
                         );
                     }
-                    NetworkCommand::PublishSignaling { conversation_id, payload } => {
+                    NetworkCommand::PublishSignaling {
+                        conversation_id,
+                        payload,
+                        reply,
+                    } => {
                         subscribe_conversation_topics(
                             &mut swarm,
                             &mut subscribed_conversations,
                             &conversation_id,
                         );
                         let topic = IdentTopic::new(format!("vibe/signal/{conversation_id}"));
-                        if let Err(e) = swarm
+                        let result = swarm
                             .behaviour_mut()
                             .gossipsub
                             .publish(topic, payload.as_bytes())
-                        {
+                            .map(|_| ())
+                            .map_err(|e| e.to_string());
+                        if let Some(tx) = reply {
+                            let _ = tx.send(result);
+                        } else if let Err(ref e) = result {
                             eprintln!("publish signaling: {e}");
                         }
                     }

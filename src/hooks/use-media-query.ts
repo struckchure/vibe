@@ -8,7 +8,6 @@ export function useMediaQuery(query: string): boolean {
   useEffect(() => {
     const mq = window.matchMedia(query);
     const onChange = () => setMatches(mq.matches);
-    onChange();
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, [query]);

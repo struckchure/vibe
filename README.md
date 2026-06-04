@@ -10,7 +10,7 @@ The first milestone (**M0**) is largely in place: encrypted 1:1 text between pee
 
 | Area | Status |
 |------|--------|
-| Tab shell (Text / Voice / Video) | Text active; voice and video are placeholders |
+| Tab shell (Text / Voice / Video) | Text + in-thread voice/video calls; tabs still placeholders for call history |
 | Chat UI | Resizable sidebar + thread, contacts, room discovery |
 | Identity | Ed25519 keypair; peer ID = public key; QR invite; JSON backup import/export |
 | Overlay | libp2p gossipsub, mDNS LAN discovery, room codes, Noise session keys |

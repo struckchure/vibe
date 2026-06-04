@@ -1,3 +1,7 @@
+export type MessageKind = "text" | "call";
+
+export type CallOutcome = "completed" | "missed" | "declined" | "cancelled";
+
 export type Message = {
   id: string;
   conversationId: string;
@@ -8,6 +12,10 @@ export type Message = {
   deliveredAt?: number | null;
   readAt?: number | null;
   pending?: boolean;
+  kind?: MessageKind;
+  callMedia?: "audio" | "video";
+  callOutcome?: CallOutcome;
+  callDurationMs?: number | null;
 };
 
 export type Conversation = {

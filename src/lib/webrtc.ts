@@ -1,20 +1,43 @@
 import type { Message } from "@/types/chat";
 import * as api from "@/lib/tauri";
 
-const TEXT_CHANNEL_LABEL = "vibe/text";
+export const TEXT_CHANNEL_LABEL = "vibe/text";
 
-const ICE_SERVERS: RTCIceServer[] = [
+export const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
-type SignalingMessage = {
-  type: string;
+export type TextSignalingMessage = {
+  type: "offer" | "answer" | "ice";
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
 };
 
-type PeerConnectionState = {
+export type CallSignalingMessage =
+  | {
+      type: "call-invite";
+      media: "audio" | "video";
+      sdp: RTCSessionDescriptionInit;
+    }
+  | { type: "call-answer"; sdp: RTCSessionDescriptionInit }
+  | { type: "call-decline" }
+  | { type: "call-end" };
+
+export type SignalingMessage = TextSignalingMessage | CallSignalingMessage;
+
+export function isCallSignal(
+  msg: SignalingMessage
+): msg is CallSignalingMessage {
+  return (
+    msg.type === "call-invite" ||
+    msg.type === "call-answer" ||
+    msg.type === "call-decline" ||
+    msg.type === "call-end"
+  );
+}
+
+export type PeerConnectionState = {
   pc: RTCPeerConnection;
   conversationId: string;
   remotePeerId: string;
@@ -23,10 +46,125 @@ type PeerConnectionState = {
   makingOffer: boolean;
   ignoreOffer: boolean;
   channel: RTCDataChannel | null;
-  unlistenSignaling: (() => void) | null;
+  onRemoteTrack: ((stream: MediaStream) => void) | null;
 };
 
 const peers = new Map<string, PeerConnectionState>();
+const callPeers = new Map<string, PeerConnectionState>();
+
+let textTransportPaused = false;
+
+/** Pause text data-channel negotiation while a voice/video call is active. */
+export function setTextTransportPaused(paused: boolean) {
+  textTransportPaused = paused;
+}
+
+const textChannelListeners = new Set<() => void>();
+
+function notifyTextChannelListeners() {
+  for (const fn of textChannelListeners) {
+    fn();
+  }
+}
+
+export function subscribeTextChannelState(listener: () => void) {
+  textChannelListeners.add(listener);
+  return () => textChannelListeners.delete(listener);
+}
+
+let callSignalingHandler:
+  | ((
+      remotePeerId: string,
+      conversationId: string,
+      msg: CallSignalingMessage
+    ) => void | Promise<void>)
+  | null = null;
+
+/** One gossipsub listener per conversation — avoids handling each message twice. */
+const signalingUnlistenByConversation = new Map<string, () => void>();
+
+export function registerCallSignalingHandler(
+  handler: (
+    remotePeerId: string,
+    conversationId: string,
+    msg: CallSignalingMessage
+  ) => void | Promise<void>
+) {
+  callSignalingHandler = handler;
+}
+
+export async function ensureConversationSignaling(
+  conversationId: string,
+  remotePeerId: string
+) {
+  if (signalingUnlistenByConversation.has(conversationId)) {
+    return;
+  }
+  const unlisten = await api.onSignaling(conversationId, (payload) => {
+    void dispatchSignaling(remotePeerId, conversationId, payload);
+  });
+  signalingUnlistenByConversation.set(conversationId, unlisten);
+}
+
+export function teardownConversationSignaling(conversationId: string) {
+  const unlisten = signalingUnlistenByConversation.get(conversationId);
+  if (unlisten) {
+    unlisten();
+    signalingUnlistenByConversation.delete(conversationId);
+  }
+}
+
+async function dispatchSignaling(
+  remotePeerId: string,
+  conversationId: string,
+  encryptedPayload: string
+) {
+  let plaintext: string;
+  try {
+    plaintext = await api.decryptSignaling(remotePeerId, encryptedPayload);
+  } catch {
+    return;
+  }
+
+  let msg: SignalingMessage;
+  try {
+    msg = JSON.parse(plaintext) as SignalingMessage;
+  } catch {
+    return;
+  }
+
+  if (isCallSignal(msg)) {
+    await callSignalingHandler?.(remotePeerId, conversationId, msg);
+    return;
+  }
+
+  if (msg.type === "ice" && msg.candidate) {
+    const callPeer = callPeers.get(remotePeerId);
+    if (callPeer?.conversationId === conversationId) {
+      try {
+        await callPeer.pc.addIceCandidate(msg.candidate);
+      } catch {
+        /* ignore late ICE */
+      }
+    }
+    const textPeer = peers.get(remotePeerId);
+    if (textPeer?.conversationId === conversationId) {
+      try {
+        await textPeer.pc.addIceCandidate(msg.candidate);
+      } catch {
+        /* ignore late ICE */
+      }
+    }
+    return;
+  }
+
+  const state = peers.get(remotePeerId);
+  if (!state || state.conversationId !== conversationId) {
+    return;
+  }
+
+  await handleTextSignaling(state, msg);
+}
 
 function isImpolite(localPeerId: string, remotePeerId: string): boolean {
   return localPeerId > remotePeerId;
@@ -50,36 +188,78 @@ function wireBytesFromData(data: string | ArrayBuffer | ArrayBufferView): Uint8A
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
 
+const SIGNAL_PUBLISH_RETRIES = 10;
+const SIGNAL_PUBLISH_RETRY_MS = 350;
+
+function formatPublishError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.includes("InsufficientPeers")) {
+    return "Could not reach your contact on the network yet — keep both devices in the same room and try again";
+  }
+  return raw || "Could not send call signal";
+}
+
 async function publishEncryptedSignaling(
   conversationId: string,
+  encrypted: string,
+  waitForDelivery: boolean
+) {
+  if (!waitForDelivery) {
+    await api.publishSignaling(conversationId, encrypted, false);
+    return;
+  }
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < SIGNAL_PUBLISH_RETRIES; attempt++) {
+    try {
+      await api.publishSignaling(conversationId, encrypted, true);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const raw = err instanceof Error ? err.message : String(err);
+      if (
+        !raw.includes("InsufficientPeers") ||
+        attempt === SIGNAL_PUBLISH_RETRIES - 1
+      ) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, SIGNAL_PUBLISH_RETRY_MS));
+    }
+  }
+  throw new Error(formatPublishError(lastErr));
+}
+
+export async function publishSignalingMessage(
+  conversationId: string,
   remotePeerId: string,
-  msg: SignalingMessage
+  msg: SignalingMessage,
+  options?: { waitForDelivery?: boolean }
 ) {
   const encrypted = await api.encryptSignaling(
     remotePeerId,
     JSON.stringify(msg)
   );
-  await api.publishSignaling(conversationId, encrypted);
+  await publishEncryptedSignaling(
+    conversationId,
+    encrypted,
+    options?.waitForDelivery ?? true
+  );
 }
 
-async function handleSignaling(
-  state: PeerConnectionState,
-  encryptedPayload: string
+function publishSignalingBestEffort(
+  conversationId: string,
+  remotePeerId: string,
+  msg: SignalingMessage
 ) {
-  let plaintext: string;
-  try {
-    plaintext = await api.decryptSignaling(state.remotePeerId, encryptedPayload);
-  } catch {
-    return;
-  }
+  void publishSignalingMessage(conversationId, remotePeerId, msg, {
+    waitForDelivery: false,
+  });
+}
 
-  let msg: SignalingMessage;
-  try {
-    msg = JSON.parse(plaintext) as SignalingMessage;
-  } catch {
-    return;
-  }
-
+async function handleTextSignaling(
+  state: PeerConnectionState,
+  msg: TextSignalingMessage
+) {
   const { pc, polite } = state;
 
   try {
@@ -92,7 +272,7 @@ async function handleSignaling(
       await pc.setRemoteDescription(msg.sdp);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await publishEncryptedSignaling(state.conversationId, state.remotePeerId, {
+      await publishSignalingMessage(state.conversationId, state.remotePeerId, {
         type: "answer",
         sdp: answer,
       });
@@ -115,9 +295,14 @@ async function handleSignaling(
 function attachDataChannel(state: PeerConnectionState, dc: RTCDataChannel) {
   state.channel = dc;
 
+  dc.onopen = () => {
+    notifyTextChannelListeners();
+  };
+
   dc.onclose = () => {
     if (state.channel === dc) {
       state.channel = null;
+      notifyTextChannelListeners();
     }
   };
 
@@ -130,7 +315,45 @@ function attachDataChannel(state: PeerConnectionState, dc: RTCDataChannel) {
   };
 }
 
-async function createPeerState(
+async function wirePeerConnection(
+  state: PeerConnectionState,
+  options: { textChannel: boolean }
+) {
+  const { pc, conversationId, remotePeerId } = state;
+
+  await ensureConversationSignaling(conversationId, remotePeerId);
+
+  pc.onicecandidate = (ev) => {
+    if (!ev.candidate) return;
+    publishSignalingBestEffort(conversationId, remotePeerId, {
+      type: "ice",
+      candidate: ev.candidate.toJSON(),
+    });
+  };
+
+  if (options.textChannel) {
+    pc.ondatachannel = (ev) => {
+      if (ev.channel.label === TEXT_CHANNEL_LABEL) {
+        attachDataChannel(state, ev.channel);
+      }
+    };
+  }
+
+  pc.ontrack = (ev) => {
+    const stream = ev.streams[0];
+    if (stream) {
+      state.onRemoteTrack?.(stream);
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed") {
+      /* keep PC for retry */
+    }
+  };
+}
+
+export async function createPeerConnection(
   localPeerId: string,
   remotePeerId: string,
   conversationId: string
@@ -147,36 +370,81 @@ async function createPeerState(
     makingOffer: false,
     ignoreOffer: false,
     channel: null,
-    unlistenSignaling: null,
+    onRemoteTrack: null,
   };
 
-  pc.onicecandidate = (ev) => {
-    if (!ev.candidate) return;
-    void publishEncryptedSignaling(conversationId, remotePeerId, {
-      type: "ice",
-      candidate: ev.candidate.toJSON(),
-    });
-  };
-
-  pc.ondatachannel = (ev) => {
-    if (ev.channel.label === TEXT_CHANNEL_LABEL) {
-      attachDataChannel(state, ev.channel);
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "closed" || pc.connectionState === "failed") {
-      closeTextTransport(remotePeerId);
-    }
-  };
-
-  const unlisten = await api.onSignaling(conversationId, (payload) => {
-    void handleSignaling(state, payload);
-  });
-  state.unlistenSignaling = unlisten;
-
+  await wirePeerConnection(state, { textChannel: true });
   peers.set(remotePeerId, state);
   return state;
+}
+
+async function createCallPeerConnection(
+  localPeerId: string,
+  remotePeerId: string,
+  conversationId: string
+): Promise<PeerConnectionState> {
+  const polite = !isImpolite(localPeerId, remotePeerId);
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+  const state: PeerConnectionState = {
+    pc,
+    conversationId,
+    remotePeerId,
+    localPeerId,
+    polite,
+    makingOffer: false,
+    ignoreOffer: false,
+    channel: null,
+    onRemoteTrack: null,
+  };
+
+  await wirePeerConnection(state, { textChannel: false });
+  callPeers.set(remotePeerId, state);
+  return state;
+}
+
+export function getPeerConnection(
+  remotePeerId: string
+): PeerConnectionState | undefined {
+  return peers.get(remotePeerId);
+}
+
+export async function ensurePeerConnection(
+  localPeerId: string,
+  remotePeerId: string,
+  conversationId: string
+): Promise<PeerConnectionState> {
+  let state = peers.get(remotePeerId);
+  if (!state) {
+    state = await createPeerConnection(localPeerId, remotePeerId, conversationId);
+  } else if (state.conversationId !== conversationId) {
+    closePeerConnection(remotePeerId);
+    state = await createPeerConnection(localPeerId, remotePeerId, conversationId);
+  }
+  return state;
+}
+
+export function getCallPeerConnection(
+  remotePeerId: string
+): PeerConnectionState | undefined {
+  return callPeers.get(remotePeerId);
+}
+
+export function closeCallPeerConnection(remotePeerId: string): void {
+  const state = callPeers.get(remotePeerId);
+  if (!state) return;
+  state.pc.close();
+  callPeers.delete(remotePeerId);
+}
+
+/** Dedicated peer connection for calls so text negotiation cannot block signaling. */
+export async function ensureCallPeerConnection(
+  localPeerId: string,
+  remotePeerId: string,
+  conversationId: string
+): Promise<PeerConnectionState> {
+  closeCallPeerConnection(remotePeerId);
+  return createCallPeerConnection(localPeerId, remotePeerId, conversationId);
 }
 
 export async function ensureTextTransport(
@@ -184,14 +452,14 @@ export async function ensureTextTransport(
   remotePeerId: string,
   conversationId: string
 ): Promise<void> {
-  let state = peers.get(remotePeerId);
-  if (!state) {
-    state = await createPeerState(localPeerId, remotePeerId, conversationId);
-  } else if (state.conversationId !== conversationId) {
-    closeTextTransport(remotePeerId);
-    state = await createPeerState(localPeerId, remotePeerId, conversationId);
+  if (textTransportPaused) {
+    return;
   }
-
+  const state = await ensurePeerConnection(
+    localPeerId,
+    remotePeerId,
+    conversationId
+  );
   const { pc, polite } = state;
 
   if (!polite && pc.signalingState === "stable" && !state.channel) {
@@ -202,7 +470,7 @@ export async function ensureTextTransport(
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await publishEncryptedSignaling(conversationId, remotePeerId, {
+      await publishSignalingMessage(conversationId, remotePeerId, {
         type: "offer",
         sdp: offer,
       });
@@ -276,17 +544,30 @@ export async function sendTextMessage(
 }
 
 export function resetTextTransport(peerId: string): void {
-  closeTextTransport(peerId);
+  closePeerConnection(peerId);
 }
 
-export function closeTextTransport(peerId: string): void {
+export function closePeerConnection(peerId: string): void {
   const state = peers.get(peerId);
   if (!state) return;
 
-  state.unlistenSignaling?.();
   state.channel?.close();
   state.pc.close();
   peers.delete(peerId);
+  notifyTextChannelListeners();
+}
+
+/** Stops media tracks but keeps the peer connection for text. */
+export function stopMediaTracks(peerId: string) {
+  const state = callPeers.get(peerId) ?? peers.get(peerId);
+  if (!state) return;
+  for (const sender of state.pc.getSenders()) {
+    sender.track?.stop();
+  }
+}
+
+export function closeTextTransport(peerId: string): void {
+  closePeerConnection(peerId);
 }
 
 /** @deprecated use isTextChannelOpen */

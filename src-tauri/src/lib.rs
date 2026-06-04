@@ -273,12 +273,20 @@ fn publish_signaling(
     state: State<'_, AppState>,
     conversation_id: String,
     payload: String,
+    wait_for_delivery: Option<bool>,
 ) -> Result<(), String> {
     state.network.start().map_err(|e| e.to_string())?;
-    state
-        .network
-        .publish_signaling(&conversation_id, &payload)
-        .map_err(|e| e.to_string())
+    if wait_for_delivery.unwrap_or(true) {
+        state
+            .network
+            .publish_signaling(&conversation_id, &payload)
+            .map_err(|e| e.to_string())
+    } else {
+        state
+            .network
+            .publish_signaling_best_effort(&conversation_id, &payload)
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Serialize)]
@@ -471,6 +479,34 @@ fn list_messages(state: State<'_, AppState>, peer_id: String) -> Result<Vec<Mess
 }
 
 #[tauri::command]
+fn record_call_history(
+    state: State<'_, AppState>,
+    peer_id: String,
+    conversation_id: String,
+    outgoing: bool,
+    media: String,
+    outcome: String,
+    duration_ms: Option<i64>,
+) -> Result<MessageRow, String> {
+    let msg = state
+        .store
+        .lock()
+        .insert_call_history(
+            &peer_id,
+            &conversation_id,
+            outgoing,
+            &media,
+            &outcome,
+            duration_ms,
+        )
+        .map_err(|e| e.to_string())?;
+    let _ = state
+        .app
+        .emit("message-received", crypto_mod::message_emit_payload(&msg));
+    Ok(msg)
+}
+
+#[tauri::command]
 fn mark_conversation_read(state: State<'_, AppState>, peer_id: String) -> Result<(), String> {
     state.network.start().map_err(|e| e.to_string())?;
 
@@ -549,6 +585,7 @@ pub fn run() {
             flush_outbox,
             mark_outgoing_sent,
             list_messages,
+            record_call_history,
             mark_conversation_read,
         ])
         .run(tauri::generate_context!())
