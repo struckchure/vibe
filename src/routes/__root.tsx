@@ -26,7 +26,7 @@ function RootLayout() {
     <main
       className={cn(
         "h-screen w-full",
-        ["android", "ios"].includes(currentPlatform) && "mt-12",
+        ["android", "ios"].includes(currentPlatform) && "h-[95vh] mt-auto",
       )}
     >
       <AppProviders>

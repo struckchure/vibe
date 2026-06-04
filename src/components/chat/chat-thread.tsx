@@ -41,8 +41,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
 import { isCallMessage } from "@/lib/call-history";
+import { cn } from "@/lib/utils";
 import type { Conversation, Message } from "@/types/chat";
 
 type ChatThreadProps = {
@@ -103,8 +103,8 @@ export function ChatThread({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-3">
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-3 sticky top-2 bg-background z-10">
         {onBack ? (
           <Button
             variant="ghost"
@@ -131,7 +131,7 @@ export function ChatThread({
             "shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
             transport === "direct"
               ? "bg-primary/10 text-primary"
-              : "bg-muted text-muted-foreground"
+              : "bg-muted text-muted-foreground",
           )}
         >
           {transport === "direct" ? "Direct" : "Network"}
@@ -201,7 +201,9 @@ export function ChatThread({
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel disabled={removing}>Cancel</AlertDialogCancel>
+                <AlertDialogCancel disabled={removing}>
+                  Cancel
+                </AlertDialogCancel>
                 <AlertDialogAction
                   className="bg-destructive text-white hover:bg-destructive/90"
                   disabled={removing}
@@ -232,7 +234,7 @@ export function ChatThread({
                     "flex max-w-[85%] items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-muted-foreground",
                     (msg.callOutcome === "missed" ||
                       msg.callOutcome === "declined") &&
-                      "text-destructive/90"
+                      "text-destructive/90",
                   )}
                 >
                   {msg.callOutcome === "missed" ||
@@ -267,7 +269,7 @@ export function ChatThread({
                     <span
                       className={cn(
                         "shrink-0 opacity-70",
-                        msg.readAt && "text-primary-foreground"
+                        msg.readAt && "text-primary-foreground",
                       )}
                       title={
                         msg.pending
@@ -283,10 +285,7 @@ export function ChatThread({
                         <ClockIcon className="size-3" />
                       ) : msg.readAt || msg.deliveredAt ? (
                         <CheckCheckIcon
-                          className={cn(
-                            "size-3",
-                            msg.readAt && "opacity-100"
-                          )}
+                          className={cn("size-3", msg.readAt && "opacity-100")}
                         />
                       ) : (
                         <CheckIcon className="size-3" />
@@ -295,7 +294,7 @@ export function ChatThread({
                   ) : null}
                 </div>
               </div>
-            )
+            ),
           )}
           <div ref={bottomRef} />
         </div>
