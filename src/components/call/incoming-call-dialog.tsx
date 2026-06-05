@@ -40,7 +40,7 @@ export function IncomingCallDialog({
   return (
     <Dialog open={open}>
       <DialogContent
-        className="z-[200] max-w-sm"
+        className="z-200 max-w-sm"
         showCloseButton={false}
         onPointerDownOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}

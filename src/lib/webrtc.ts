@@ -3,10 +3,28 @@ import * as api from "@/lib/tauri";
 
 export const TEXT_CHANNEL_LABEL = "vibe/text";
 
-export const ICE_SERVERS: RTCIceServer[] = [
+/** Dev/testing only — replace with user-configured TURN before production (SPEC §11.4). */
+const OPEN_RELAY_TURN: RTCIceServer = {
+  urls: [
+    "turn:openrelay.metered.ca:80",
+    "turn:openrelay.metered.ca:443",
+    "turn:openrelay.metered.ca:443?transport=tcp",
+  ],
+  username: "openrelayproject",
+  credential: "openrelayproject",
+};
+
+export const CALL_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
+  OPEN_RELAY_TURN,
+];
+
+export const ICE_SERVERS: RTCIceServer[] = [
+  ...CALL_ICE_SERVERS,
   { urls: "stun:stun1.l.google.com:19302" },
 ];
+
+export const CALL_ICE_GATHER_TIMEOUT_MS = 4000;
 
 export type TextSignalingMessage = {
   type: "offer" | "answer" | "ice";
@@ -78,6 +96,9 @@ export type PeerConnectionState = {
   channel: RTCDataChannel | null;
   onRemoteTrack: ((stream: MediaStream) => void) | null;
   pendingIce: RTCIceCandidateInit[];
+  /** Outbound ICE held until callLeg is ready (testclient pendingLocalIce). */
+  pendingLocalIce: RTCIceCandidateInit[];
+  callIceReady: boolean;
   /** Accumulated remote tracks for call PCs (iOS may omit ev.streams[0]). */
   remoteMediaStream: MediaStream | null;
 };
@@ -85,15 +106,35 @@ export type PeerConnectionState = {
 export function sessionDescriptionPayload(
   desc: RTCSessionDescription | RTCSessionDescriptionInit | null | undefined
 ): RTCSessionDescriptionInit | null {
-  if (!desc?.type || !desc.sdp) return null;
+  if (!desc) return null;
+  if (!desc.type || !desc.sdp) return null;
   return { type: desc.type, sdp: desc.sdp };
+}
+
+/** testclient sdpInit — accepts JSON-stringified SDP or raw SDP string. */
+export function parseSessionDescription(
+  sdp: RTCSessionDescriptionInit | string | null | undefined
+): RTCSessionDescriptionInit | null {
+  if (!sdp) return null;
+  if (typeof sdp === "string") {
+    try {
+      const parsed = JSON.parse(sdp) as RTCSessionDescriptionInit;
+      if (parsed?.type && parsed.sdp) {
+        return { type: parsed.type, sdp: parsed.sdp };
+      }
+    } catch {
+      return { type: "offer", sdp };
+    }
+    return null;
+  }
+  return sessionDescriptionPayload(sdp);
 }
 
 export async function applyRemoteDescription(
   pc: RTCPeerConnection,
-  desc: RTCSessionDescriptionInit
+  desc: RTCSessionDescriptionInit | string
 ) {
-  const payload = sessionDescriptionPayload(desc);
+  const payload = parseSessionDescription(desc);
   if (!payload) {
     throw new Error("invalid session description");
   }
@@ -191,6 +232,28 @@ export async function flushPendingIce(state: PeerConnectionState) {
     } catch {
       /* ignore late ICE */
     }
+  }
+}
+
+export function setCallIceReady(remotePeerId: string, ready: boolean) {
+  const state = callPeers.get(remotePeerId);
+  if (state) {
+    state.callIceReady = ready;
+  }
+}
+
+/** Publish outbound ICE queued before callLeg was ready (testclient flushPendingLocalIce). */
+export async function flushPendingLocalIce(remotePeerId: string) {
+  const state = callPeers.get(remotePeerId);
+  if (!state || state.pendingLocalIce.length === 0) {
+    return;
+  }
+  const queued = state.pendingLocalIce.splice(0);
+  for (const candidate of queued) {
+    publishSignalingBestEffort(state.conversationId, state.remotePeerId, {
+      type: "ice",
+      candidate,
+    });
   }
 }
 
@@ -540,6 +603,12 @@ async function wirePeerConnection(
 
   pc.onicecandidate = (ev) => {
     if (!ev.candidate) return;
+    if (!options.textChannel) {
+      if (!state.callIceReady) {
+        state.pendingLocalIce.push(ev.candidate.toJSON());
+        return;
+      }
+    }
     publishSignalingBestEffort(conversationId, remotePeerId, {
       type: "ice",
       candidate: ev.candidate.toJSON(),
@@ -565,11 +634,25 @@ async function wirePeerConnection(
     mergeRemoteTracks(state, tracksFromTrackEvent(ev));
   };
 
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed") {
-      /* keep PC for retry */
-    }
-  };
+  if (!options.textChannel) {
+    pc.oniceconnectionstatechange = () => {
+      const ice = pc.iceConnectionState;
+      if (ice === "connected" || ice === "completed") {
+        syncCallRemoteTracks(state);
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") {
+        syncCallRemoteTracks(state);
+      }
+    };
+  } else {
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed") {
+        /* keep PC for retry */
+      }
+    };
+  }
 }
 
 export async function createPeerConnection(
@@ -591,6 +674,8 @@ export async function createPeerConnection(
     channel: null,
     onRemoteTrack: null,
     pendingIce: [],
+    pendingLocalIce: [],
+    callIceReady: false,
     remoteMediaStream: null,
   };
 
@@ -605,7 +690,7 @@ async function createCallPeerConnection(
   conversationId: string
 ): Promise<PeerConnectionState> {
   const polite = !isImpolite(localPeerId, remotePeerId);
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
 
   const state: PeerConnectionState = {
     pc,
@@ -618,6 +703,8 @@ async function createCallPeerConnection(
     channel: null,
     onRemoteTrack: null,
     pendingIce: [],
+    pendingLocalIce: [],
+    callIceReady: false,
     remoteMediaStream: null,
   };
 

@@ -9,17 +9,20 @@ import {
 } from "@/lib/call-ringtone";
 import {
   applyRemoteDescription,
+  CALL_ICE_GATHER_TIMEOUT_MS,
   type CallSignalingMessage,
   closeCallPeerConnection,
   ensureCallPeerConnection,
   ensureConversationSignaling,
   clearOrphanedCallIce,
   flushPendingIce,
+  flushPendingLocalIce,
   getCallPeerConnection,
   publishSignalingMessage,
   syncCallRemoteTracks,
   registerCallSignalingHandler,
   sessionDescriptionPayload,
+  setCallIceReady,
   setSignalingLocalPeerId,
   setTextTransportPaused,
   stopMediaTracks,
@@ -77,28 +80,17 @@ let contactsByPeer = new Map<string, ContactInfo>();
 let incomingToastId: string | number | null = null;
 let endingCall = false;
 
-function canPromoteCallToActive(peerId: string): boolean {
-  const active = state.active;
-  if (!active || active.peerId !== peerId) return false;
-  if (active.phase === "incoming" || active.phase === "ended") return false;
+/** Serialize call signaling per peer so answer finishes before decline/end. */
+const signalingChain = new Map<string, Promise<void>>();
 
-  const peer = getCallPeerConnection(peerId);
-  if (active.direction === "outgoing") {
-    return peer?.pc.remoteDescription?.type === "answer";
-  }
-  if (active.direction === "incoming") {
-    return peer?.pc.localDescription?.type === "answer";
-  }
-  return false;
-}
-
-function promoteCallIfReady(peerId: string) {
-  if (!canPromoteCallToActive(peerId)) return;
-  const peer = getCallPeerConnection(peerId);
-  if (peer) {
-    syncCallRemoteTracks(peer);
-  }
-  setPhase("active");
+function enqueueCallSignaling(
+  peerId: string,
+  fn: () => Promise<void>
+): Promise<void> {
+  const prev = signalingChain.get(peerId) ?? Promise.resolve();
+  const next = prev.then(fn).catch(() => {});
+  signalingChain.set(peerId, next);
+  return next;
 }
 
 function wireCallRemoteTracks(peerId: string) {
@@ -107,8 +99,30 @@ function wireCallRemoteTracks(peerId: string) {
   peer.onRemoteTrack = (stream) => {
     stopIncomingRingtone();
     state.remoteStream = stream;
-    promoteCallIfReady(peerId);
     notify();
+  };
+}
+
+function wireCallConnectionState(peerId: string, pc: RTCPeerConnection) {
+  pc.oniceconnectionstatechange = () => {
+    const ice = pc.iceConnectionState;
+    if (
+      (ice === "connected" || ice === "completed") &&
+      state.active?.peerId === peerId
+    ) {
+      const peer = getCallPeerConnection(peerId);
+      if (peer) syncCallRemoteTracks(peer);
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (
+      pc.connectionState === "connected" &&
+      state.active?.peerId === peerId
+    ) {
+      const peer = getCallPeerConnection(peerId);
+      if (peer) syncCallRemoteTracks(peer);
+    }
   };
 }
 
@@ -177,27 +191,6 @@ function setPhase(phase: CallPhase) {
   notify();
 }
 
-function wireCallConnectionState(peerId: string, pc: RTCPeerConnection) {
-  pc.oniceconnectionstatechange = () => {
-    const ice = pc.iceConnectionState;
-    if (
-      (ice === "connected" || ice === "completed") &&
-      state.active?.peerId === peerId
-    ) {
-      promoteCallIfReady(peerId);
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (
-      pc.connectionState === "connected" &&
-      state.active?.peerId === peerId
-    ) {
-      promoteCallIfReady(peerId);
-    }
-  };
-}
-
 async function persistCallHistory(active: ActiveCall, outcome: CallOutcome) {
   const durationMs = active.connectedAt
     ? Date.now() - active.connectedAt
@@ -234,7 +227,14 @@ async function getUserMedia(media: CallMedia): Promise<MediaStream> {
   try {
     return await navigator.mediaDevices.getUserMedia({
       audio: true,
-      video: media === "video",
+      video:
+        media === "video"
+          ? {
+              facingMode: "user",
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+            }
+          : false,
     });
   } catch (err) {
     const name = err instanceof DOMException ? err.name : "";
@@ -250,12 +250,12 @@ async function getUserMedia(media: CallMedia): Promise<MediaStream> {
   }
 }
 
-function attachLocalTracks(
-  peerId: string,
-  stream: MediaStream
-) {
+function attachLocalTracks(peerId: string, stream: MediaStream) {
   const peer = getCallPeerConnection(peerId);
   if (!peer) return;
+  for (const track of stream.getAudioTracks()) {
+    track.enabled = true;
+  }
   for (const track of stream.getTracks()) {
     peer.pc.addTrack(track, stream);
   }
@@ -272,8 +272,7 @@ function abortActiveCall(peerId: string) {
   clearIncomingAlerts();
   setTextTransportPaused(false);
   const conversationId =
-    state.active?.conversationId ??
-    state.pendingIncoming?.conversationId;
+    state.active?.conversationId ?? state.pendingIncoming?.conversationId;
   if (conversationId) {
     clearOrphanedCallIce(conversationId, peerId);
   }
@@ -303,6 +302,7 @@ function shouldProcessCallDecline(
   active: ActiveCall,
   peerId: string
 ): boolean {
+  if (active.phase === "active") return false;
   if (active.direction === "incoming") {
     return active.phase === "incoming";
   }
@@ -317,26 +317,26 @@ function shouldProcessCallDecline(
   return false;
 }
 
-/** Ignore stray call-end during SDP handshake; allow end once truly in-call. */
 function shouldProcessCallEnd(active: ActiveCall, peerId: string): boolean {
-  if (
-    active.phase === "ended" ||
-    active.phase === "incoming" ||
-    active.phase === "outgoing"
-  ) {
+  if (active.phase === "ended") return false;
+  if (active.phase === "incoming" || active.phase === "outgoing") {
+    return true;
+  }
+  if (active.phase === "active") return true;
+  if (active.phase === "connecting") {
+    const peer = getCallPeerConnection(peerId);
+    if (active.direction === "outgoing") {
+      return peer?.pc.remoteDescription?.type === "answer";
+    }
+    if (active.direction === "incoming") {
+      return peer?.pc.localDescription?.type === "answer";
+    }
     return false;
   }
-  const peer = getCallPeerConnection(peerId);
-  if (active.direction === "incoming" && active.phase === "connecting") {
-    return false;
-  }
-  if (active.direction === "outgoing" && active.phase === "connecting") {
-    return peer?.pc.remoteDescription?.type !== "answer";
-  }
-  return active.phase === "active";
+  return false;
 }
 
-async function handleCallSignaling(
+async function handleCallSignalingImpl(
   remotePeerId: string,
   conversationId: string,
   msg: CallSignalingMessage
@@ -345,8 +345,6 @@ async function handleCallSignaling(
   const displayName = contact?.displayName ?? remotePeerId.slice(0, 8);
 
   if (msg.type === "call-invite") {
-    // Ignore re-delivered invite for the same leg (ringing, connecting, active, outgoing).
-    // Without this, an echoed invite after Accept hits isCallBusy() and we send call-decline.
     if (
       state.active?.peerId === remotePeerId &&
       state.active.phase !== "ended" &&
@@ -416,10 +414,9 @@ async function handleCallSignaling(
       await applyRemoteDescription(peer.pc, answer);
       await flushPendingIce(peer);
       syncCallRemoteTracks(peer);
-      promoteCallIfReady(remotePeerId);
+      setPhase("active");
     } catch {
-      toast.error("Could not connect the call — try calling again");
-      await endCallInternal(false);
+      toast.error("Could not apply call answer — still connecting");
     }
     return;
   }
@@ -466,6 +463,16 @@ async function handleCallSignaling(
   }
 }
 
+function handleCallSignaling(
+  remotePeerId: string,
+  conversationId: string,
+  msg: CallSignalingMessage
+) {
+  void enqueueCallSignaling(remotePeerId, () =>
+    handleCallSignalingImpl(remotePeerId, conversationId, msg)
+  );
+}
+
 export async function setupCallSignaling(
   localId: string,
   contacts: ContactInfo[]
@@ -488,11 +495,7 @@ export async function startCall(
   contact: ContactInfo,
   media: CallMedia
 ) {
-  if (
-    state.active &&
-    (state.active.phase === "outgoing" || state.active.phase === "ended") &&
-    !state.active.signaled
-  ) {
+  if (state.active) {
     abortActiveCall(state.active.peerId);
   }
 
@@ -532,9 +535,11 @@ export async function startCall(
   };
   notify();
 
-  let peer: Awaited<ReturnType<typeof ensureCallPeerConnection>>;
   try {
-    peer = await ensureCallPeerConnection(
+    const stream = await getUserMedia(media);
+    state.localStream = stream;
+
+    const peer = await ensureCallPeerConnection(
       localId,
       contact.peerId,
       contact.conversationId
@@ -542,16 +547,13 @@ export async function startCall(
 
     wireCallRemoteTracks(contact.peerId);
     wireCallConnectionState(contact.peerId, peer.pc);
-
-    const stream = await getUserMedia(media);
-    state.localStream = stream;
     attachLocalTracks(contact.peerId, stream);
 
     peer.makingOffer = true;
     try {
       const offer = await peer.pc.createOffer(callOfferOptions(media));
       await peer.pc.setLocalDescription(offer);
-      await waitForIceGathering(peer.pc);
+      await waitForIceGathering(peer.pc, CALL_ICE_GATHER_TIMEOUT_MS);
       const inviteSdp =
         sessionDescriptionPayload(peer.pc.localDescription) ?? offer;
       await publishSignalingMessage(
@@ -565,6 +567,8 @@ export async function startCall(
         },
         { waitForDelivery: true }
       );
+      setCallIceReady(contact.peerId, true);
+      await flushPendingLocalIce(contact.peerId);
       if (state.active) {
         state.active = { ...state.active, signaled: true };
       }
@@ -594,8 +598,9 @@ export async function acceptCall(localId: string) {
 
   setTextTransportPaused(true);
 
+  let peer: Awaited<ReturnType<typeof ensureCallPeerConnection>> | undefined;
   try {
-    const peer = await ensureCallPeerConnection(
+    peer = await ensureCallPeerConnection(
       localId,
       incoming.peerId,
       incoming.conversationId
@@ -603,6 +608,7 @@ export async function acceptCall(localId: string) {
 
     wireCallRemoteTracks(incoming.peerId);
     wireCallConnectionState(incoming.peerId, peer.pc);
+    setCallIceReady(incoming.peerId, true);
 
     const stream = await getUserMedia(incoming.media);
     state.localStream = stream;
@@ -615,8 +621,7 @@ export async function acceptCall(localId: string) {
       callAnswerOptions(incoming.media)
     );
     await peer.pc.setLocalDescription(answer);
-    await waitForIceGathering(peer.pc);
-    await flushPendingIce(peer);
+    await waitForIceGathering(peer.pc, CALL_ICE_GATHER_TIMEOUT_MS);
 
     const answerSdp =
       sessionDescriptionPayload(peer.pc.localDescription) ?? answer;
@@ -628,8 +633,9 @@ export async function acceptCall(localId: string) {
         sdp: answerSdp,
         callLeg: incoming.callLeg,
       },
-      { waitForDelivery: true }
+      { waitForDelivery: false }
     );
+    await flushPendingLocalIce(incoming.peerId);
 
     state.pendingIncoming = null;
     if (state.active) {
@@ -640,9 +646,22 @@ export async function acceptCall(localId: string) {
       };
     }
     syncCallRemoteTracks(peer);
-    promoteCallIfReady(incoming.peerId);
-    notify();
+    setPhase("active");
   } catch (err) {
+    const callPeer = peer ?? getCallPeerConnection(incoming.peerId);
+    const answeredLocally =
+      callPeer?.pc.localDescription?.type === "answer";
+    if (!answeredLocally) {
+      try {
+        await publishSignalingMessage(
+          incoming.conversationId,
+          incoming.peerId,
+          { type: "call-decline", callLeg: incoming.callLeg }
+        );
+      } catch {
+        /* offline */
+      }
+    }
     abortActiveCall(incoming.peerId);
     throw err;
   }
@@ -694,7 +713,7 @@ async function endCallInternal(sendSignal: boolean) {
     await persistCallHistory(active, resolveHangupOutcome(active));
   }
 
-  if (sendSignal) {
+  if (sendSignal && active.signaled) {
     try {
       await publishSignalingMessage(
         active.conversationId,
