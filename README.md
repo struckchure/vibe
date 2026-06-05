@@ -79,6 +79,15 @@ bun run dev
 bun run tauri build
 ```
 
+On Linux, install packaging dependencies before bundling AppImage/deb/rpm artifacts. At minimum, `xdg-utils` provides `/usr/bin/xdg-open`, which Tauri requires at bundle time:
+
+```bash
+# Debian/Ubuntu — required for AppImage/deb/rpm bundling
+sudo apt install xdg-utils
+```
+
+See [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) for the full system-dependency list.
+
 For iOS development with an external dev server (e.g. simulator pointing at a host machine):
 
 ```bash
