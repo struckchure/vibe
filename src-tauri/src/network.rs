@@ -10,6 +10,7 @@ use libp2p::gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode};
 use libp2p::identify;
 use libp2p::kad::{self, store::MemoryStore};
 use libp2p::mdns;
+use libp2p::relay;
 use libp2p::rendezvous;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::{NetworkBehaviour, StreamProtocol, SwarmEvent};
@@ -72,6 +73,7 @@ struct Behaviour {
     room_announce: request_response::json::Behaviour<RoomAnnounceReq, RoomAnnounceResp>,
     kademlia: kad::Behaviour<MemoryStore>,
     rendezvous: rendezvous::client::Behaviour,
+    relay: relay::client::Behaviour,
 }
 
 pub enum NetworkCommand {
@@ -100,6 +102,8 @@ pub enum NetworkCommand {
         sender_peer_id: String,
         message_id: String,
     },
+    DiscoverContacts,
+    DiscoverPeer { peer_id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -314,6 +318,22 @@ impl NetworkHandle {
         Ok(())
     }
 
+    pub fn discover_contacts(&self) -> Result<()> {
+        self.sender()?
+            .send(NetworkCommand::DiscoverContacts)
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    pub fn discover_peer(&self, peer_id: &str) -> Result<()> {
+        self.sender()?
+            .send(NetworkCommand::DiscoverPeer {
+                peer_id: peer_id.to_string(),
+            })
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
+    }
+
     pub fn publish_signaling(&self, conversation_id: &str, payload: &str) -> Result<()> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.sender()?
@@ -407,15 +427,6 @@ async fn run_swarm(
 
     let rendezvous_client = rendezvous::client::Behaviour::new(local_key.clone());
 
-    let behaviour = Behaviour {
-        gossipsub,
-        mdns: mdns_behaviour,
-        identify,
-        room_announce,
-        kademlia,
-        rendezvous: rendezvous_client,
-    };
-
     let mut swarm = SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
         .with_tcp(
@@ -423,7 +434,16 @@ async fn run_swarm(
             noise::Config::new,
             yamux::Config::default,
         )?
-        .with_behaviour(|_| behaviour)?
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|_, relay| Behaviour {
+            gossipsub,
+            mdns: mdns_behaviour,
+            identify,
+            room_announce,
+            kademlia,
+            rendezvous: rendezvous_client,
+            relay,
+        })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
@@ -432,11 +452,15 @@ async fn run_swarm(
         eprintln!("overlay bootstrap: {e}");
     }
 
-    let mut announce_interval = tokio::time::interval(Duration::from_secs(5));
+    let relay_peer_ids = relay_peer_ids_from_config();
+    let mut relay_listen_attempted: HashSet<PeerId> = HashSet::new();
+    let mut announce_interval =
+        tokio::time::interval_at(tokio::time::Instant::now(), Duration::from_secs(5));
     let mut room_topic: Option<IdentTopic> = None;
     let mut presence_topic: Option<IdentTopic> = None;
     let mut room_code_active: Option<String> = None;
     let mut listen_addrs: Vec<Multiaddr> = Vec::new();
+    let mut external_addrs: Vec<Multiaddr> = Vec::new();
     let mut subscribed_conversations: HashSet<String> = HashSet::new();
     let mut announced_room_to: HashSet<PeerId> = HashSet::new();
 
@@ -448,13 +472,29 @@ async fn run_swarm(
                         if !listen_addrs.contains(&address) {
                             listen_addrs.push(address.clone());
                         }
+                        if address.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+                            if !external_addrs.contains(&address) {
+                                external_addrs.push(address.clone());
+                            }
+                        }
                         swarm.add_external_address(address.clone());
                         swarm
                             .behaviour_mut()
                             .kademlia
                             .add_address(&local_peer_id, address);
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        if !external_addrs.contains(&address) {
+                            external_addrs.push(address.clone());
+                        }
+                        swarm.add_external_address(address);
+                    }
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        if relay_peer_ids.contains(&peer_id)
+                            && relay_listen_attempted.insert(peer_id)
+                        {
+                            try_relay_listen(&mut swarm, peer_id, endpoint.get_remote_address());
+                        }
                         if peer_id != local_peer_id {
                             swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                             let mut peers = connected_libp2p_peers.write();
@@ -470,6 +510,7 @@ async fn run_swarm(
                                     &identity,
                                     &name,
                                     &listen_addrs,
+                                    &external_addrs,
                                     peer_id,
                                 );
                             }
@@ -542,6 +583,15 @@ async fn run_swarm(
                         *current_room.write() = Some(code.clone());
                         room_peers.write().clear();
                         rendezvous_register(&mut swarm, &hash);
+                        let name = join_name.clone();
+                        publish_peer_to_dht(
+                            &mut swarm,
+                            &identity,
+                            &name,
+                            &listen_addrs,
+                            &external_addrs,
+                        );
+                        publish_room_discovery(&mut swarm, &code);
                         publish_room_presence(
                             &mut swarm,
                             &identity,
@@ -553,6 +603,7 @@ async fn run_swarm(
                     NetworkCommand::LeaveRoom => {
                         if let Some(code) = current_room.read().clone() {
                             let hash = room_topic_hash(&code);
+                            stop_room_discovery(&mut swarm, &code);
                             rendezvous_unregister(&mut swarm, &hash);
                             let name = display_name.read().clone();
                             publish_room_presence(
@@ -675,21 +726,35 @@ async fn run_swarm(
                             Err(e) => eprintln!("build read: {e}"),
                         }
                     }
+                    NetworkCommand::DiscoverContacts => {
+                        discover_contacts(&mut swarm, &store);
+                    }
+                    NetworkCommand::DiscoverPeer { peer_id } => {
+                        discover_peer(&mut swarm, &peer_id);
+                    }
                 }
             }
-            _ = announce_interval.tick(), if room_topic.is_some() => {
+            _ = announce_interval.tick() => {
+                let name = display_name.read().clone();
+                publish_peer_to_dht(
+                    &mut swarm,
+                    &identity,
+                    &name,
+                    &listen_addrs,
+                    &external_addrs,
+                );
+                discover_contacts(&mut swarm, &store);
                 if let Some(topic) = room_topic.clone() {
-                    let name = display_name.read().clone();
-                    let wire = build_signed_announce(&identity, &name, &listen_addrs);
+                    let wire =
+                        build_signed_announce(&identity, &name, &listen_addrs, &external_addrs);
                     let bytes = serde_json::to_vec(&wire).unwrap_or_default();
                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
                         eprintln!("publish announce: {e}");
                     }
                 }
                 if let Some(code) = room_code_active.clone() {
-                    let name = display_name.read().clone();
                     let hash = room_topic_hash(&code);
-                    publish_room_to_dht(&mut swarm, &identity, &name, &listen_addrs, &code);
+                    publish_room_discovery(&mut swarm, &code);
                     rendezvous_register(&mut swarm, &hash);
                     rendezvous_discover(&mut swarm, &hash);
                 }
@@ -705,9 +770,10 @@ fn build_signed_announce(
     identity: &Identity,
     display_name: &str,
     listen_addrs: &[Multiaddr],
+    external_addrs: &[Multiaddr],
 ) -> WireAnnounce {
     let expires = chrono_now_ms() + 30_000;
-    let dial_addrs = announce_listen_addrs(listen_addrs);
+    let dial_addrs = announce_listen_addrs(listen_addrs, external_addrs);
     let payload = serde_json::json!({
         "type": "vibe/announce/2",
         "peerId": identity.peer_id_b64(),
@@ -769,9 +835,10 @@ fn push_room_announce_direct(
     identity: &Identity,
     display_name: &str,
     listen_addrs: &[Multiaddr],
+    external_addrs: &[Multiaddr],
     peer_id: PeerId,
 ) {
-    let wire = build_signed_announce(identity, display_name, listen_addrs);
+    let wire = build_signed_announce(identity, display_name, listen_addrs, external_addrs);
     swarm
         .behaviour_mut()
         .room_announce
@@ -796,8 +863,58 @@ fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
     })
 }
 
-fn room_dht_key(room_code: &str) -> kad::RecordKey {
+fn peer_dht_key(peer_id: &PeerId) -> kad::RecordKey {
+    kad::RecordKey::new(&format!("vibe-peer-{peer_id}"))
+}
+
+fn peer_dht_key_b64(peer_id_b64: &str) -> Option<kad::RecordKey> {
+    let bytes = Identity::peer_id_from_b64(peer_id_b64).ok()?;
+    let kp = libp2p::identity::Keypair::ed25519_from_bytes(bytes).ok()?;
+    Some(peer_dht_key(&kp.public().to_peer_id()))
+}
+
+fn room_provider_key(room_code: &str) -> kad::RecordKey {
     kad::RecordKey::new(&format!("vibe-room-{}", room_topic_hash(room_code)))
+}
+
+fn relay_peer_ids_from_config() -> HashSet<PeerId> {
+    let mut ids = HashSet::new();
+    for addr_str in crate::bootstrap::RELAY_PEERS {
+        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+            if let Some(id) = peer_id_from_multiaddr(&addr) {
+                ids.insert(id);
+            }
+        }
+    }
+    ids
+}
+
+fn relay_transport_addr(addr: &Multiaddr) -> Multiaddr {
+    let mut out = Multiaddr::empty();
+    for proto in addr.iter() {
+        if matches!(proto, Protocol::P2p(_)) {
+            break;
+        }
+        out = out.with(proto);
+    }
+    out
+}
+
+fn try_relay_listen(
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    relay_peer_id: PeerId,
+    connected_addr: &Multiaddr,
+) {
+    let base = relay_transport_addr(connected_addr);
+    if base.is_empty() {
+        return;
+    }
+    let circuit = base
+        .with(Protocol::P2p(relay_peer_id))
+        .with(Protocol::P2pCircuit);
+    if let Err(e) = swarm.listen_on(circuit) {
+        eprintln!("relay listen_on: {e}");
+    }
 }
 
 fn room_rendezvous_namespace(room_hash: &str) -> Option<rendezvous::Namespace> {
@@ -805,47 +922,46 @@ fn room_rendezvous_namespace(room_hash: &str) -> Option<rendezvous::Namespace> {
 }
 
 fn bootstrap_overlay(swarm: &mut libp2p::Swarm<Behaviour>) -> Result<()> {
-    for addr_str in crate::bootstrap::BOOTSTRAP_PEERS {
-        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
-            if let Some(peer_id) = peer_id_from_multiaddr(&addr) {
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, addr.clone());
+    let mut dialed = HashSet::new();
+    for list in [
+        crate::bootstrap::BOOTSTRAP_PEERS,
+        crate::bootstrap::RELAY_PEERS,
+        crate::bootstrap::RENDEZVOUS_PEERS,
+    ] {
+        for addr_str in list {
+            if !dialed.insert(*addr_str) {
+                continue;
             }
-            let _ = swarm.dial(addr);
-        }
-    }
-    for addr_str in crate::bootstrap::RENDEZVOUS_PEERS {
-        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
-            if let Some(peer_id) = peer_id_from_multiaddr(&addr) {
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, addr.clone());
+            if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                if let Some(peer_id) = peer_id_from_multiaddr(&addr) {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
+                }
+                let _ = swarm.dial(addr);
             }
-            let _ = swarm.dial(addr);
         }
     }
     swarm.behaviour_mut().kademlia.bootstrap()?;
     Ok(())
 }
 
-fn publish_room_to_dht(
+fn publish_peer_to_dht(
     swarm: &mut libp2p::Swarm<Behaviour>,
     identity: &Identity,
     display_name: &str,
     listen_addrs: &[Multiaddr],
-    room_code: &str,
+    external_addrs: &[Multiaddr],
 ) {
-    let wire = build_signed_announce(identity, display_name, listen_addrs);
+    let wire = build_signed_announce(identity, display_name, listen_addrs, external_addrs);
     let bytes = match serde_json::to_vec(&wire) {
         Ok(b) => b,
         Err(_) => return,
     };
-    let key = room_dht_key(room_code);
+    let key = peer_dht_key(swarm.local_peer_id());
     let record = kad::Record {
-        key: key.clone(),
+        key,
         value: bytes,
         publisher: None,
         expires: None,
@@ -855,8 +971,36 @@ fn publish_room_to_dht(
         .kademlia
         .put_record(record, kad::Quorum::One)
     {
-        eprintln!("dht put_record: {e}");
+        eprintln!("dht put_record peer: {e}");
     }
+}
+
+fn publish_room_discovery(swarm: &mut libp2p::Swarm<Behaviour>, room_code: &str) {
+    let key = room_provider_key(room_code);
+    if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(key.clone()) {
+        eprintln!("dht start_providing: {e}");
+    }
+    swarm.behaviour_mut().kademlia.get_providers(key);
+}
+
+fn stop_room_discovery(swarm: &mut libp2p::Swarm<Behaviour>, room_code: &str) {
+    swarm
+        .behaviour_mut()
+        .kademlia
+        .stop_providing(&room_provider_key(room_code));
+}
+
+fn discover_contacts(swarm: &mut libp2p::Swarm<Behaviour>, store: &Arc<Mutex<EphemeralStore>>) {
+    let contacts = store.lock().list_contacts();
+    for contact in contacts {
+        discover_peer(swarm, &contact.peer_id);
+    }
+}
+
+fn discover_peer(swarm: &mut libp2p::Swarm<Behaviour>, peer_id_b64: &str) {
+    let Some(key) = peer_dht_key_b64(peer_id_b64) else {
+        return;
+    };
     swarm.behaviour_mut().kademlia.get_record(key);
 }
 
@@ -960,18 +1104,39 @@ fn handle_behaviour_event(
     subscribed_conversations: &mut HashSet<String>,
 ) -> Option<Vec<Multiaddr>> {
     use gossipsub::Event as GossipEvent;
-    use kad::{GetRecordOk, QueryResult};
+    use kad::{GetProvidersOk, GetRecordOk, QueryResult};
     use request_response::Event as RrEvent;
 
     match event {
         BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed { result, .. }) => {
-            if let QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(peer_record))) = result {
-                if let Ok(announce) =
-                    serde_json::from_slice::<WireAnnounce>(&peer_record.record.value)
-                {
-                    return apply_room_announce(&announce, identity, room_peers, app);
+            match result {
+                QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(peer_record))) => {
+                    if let Ok(announce) =
+                        serde_json::from_slice::<WireAnnounce>(&peer_record.record.value)
+                    {
+                        return apply_peer_announce(&announce, identity);
+                    }
                 }
+                QueryResult::GetProviders(Ok(GetProvidersOk::FoundProviders { providers, .. })) => {
+                    let local = *swarm.local_peer_id();
+                    for provider in providers {
+                        if provider == local {
+                            continue;
+                        }
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .get_record(peer_dht_key(&provider));
+                    }
+                }
+                _ => {}
             }
+        }
+        BehaviourEvent::Relay(relay::client::Event::ReservationReqAccepted {
+            relay_peer_id,
+            ..
+        }) => {
+            eprintln!("relay reservation accepted from {relay_peer_id}");
         }
         BehaviourEvent::Rendezvous(rendezvous::client::Event::Discovered { registrations, .. }) => {
             let local = *swarm.local_peer_id();
@@ -1010,6 +1175,9 @@ fn handle_behaviour_event(
             }
         }
         BehaviourEvent::Identify(identify::Event::Received { info, .. }) => {
+            if !info.observed_addr.is_empty() {
+                swarm.add_external_address(info.observed_addr.clone());
+            }
             let mut dial = Vec::new();
             for addr in info.listen_addrs {
                 if addr.iter().any(|p| matches!(p, Protocol::Tcp(_))) {
@@ -1179,12 +1347,7 @@ fn apply_room_presence(
     );
 }
 
-fn apply_room_announce(
-    announce: &WireAnnounce,
-    identity: &Identity,
-    room_peers: &Arc<RwLock<HashMap<String, RoomPeer>>>,
-    app: &AppHandle,
-) -> Option<Vec<Multiaddr>> {
+fn apply_peer_announce(announce: &WireAnnounce, identity: &Identity) -> Option<Vec<Multiaddr>> {
     if announce.msg_type != "vibe/announce/1" && announce.msg_type != "vibe/announce/2" {
         return None;
     }
@@ -1220,15 +1383,6 @@ fn apply_room_announce(
         return None;
     }
 
-    let peer = RoomPeer {
-        peer_id: announce.peer_id.clone(),
-        display_name: announce.display_name.clone(),
-    };
-    room_peers
-        .write()
-        .insert(announce.peer_id.clone(), peer.clone());
-    let _ = app.emit("room-peer", peer);
-
     let mut dial = Vec::new();
     for addr_str in &announce.listen_addrs {
         if let Ok(addr) = addr_str.parse::<Multiaddr>() {
@@ -1244,9 +1398,27 @@ fn apply_room_announce(
     }
 }
 
-fn announce_listen_addrs(listen_addrs: &[Multiaddr]) -> Vec<String> {
+fn apply_room_announce(
+    announce: &WireAnnounce,
+    identity: &Identity,
+    room_peers: &Arc<RwLock<HashMap<String, RoomPeer>>>,
+    app: &AppHandle,
+) -> Option<Vec<Multiaddr>> {
+    let dial = apply_peer_announce(announce, identity)?;
+    let peer = RoomPeer {
+        peer_id: announce.peer_id.clone(),
+        display_name: announce.display_name.clone(),
+    };
+    room_peers
+        .write()
+        .insert(announce.peer_id.clone(), peer.clone());
+    let _ = app.emit("room-peer", peer);
+    Some(dial)
+}
+
+fn announce_listen_addrs(listen_addrs: &[Multiaddr], external_addrs: &[Multiaddr]) -> Vec<String> {
     let mut out = Vec::new();
-    for addr in listen_addrs {
+    for addr in listen_addrs.iter().chain(external_addrs.iter()) {
         if let Some(s) = publishable_multiaddr(addr) {
             if !out.contains(&s) {
                 out.push(s);
@@ -1310,6 +1482,9 @@ fn publishable_multiaddr(addr: &Multiaddr) -> Option<String> {
 
 /// Addresses we will dial (excludes loopback except emulator host).
 fn should_dial_addr(addr: &Multiaddr) -> bool {
+    if addr.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+        return addr.iter().any(|p| matches!(p, Protocol::P2p(_)));
+    }
     let mut has_tcp = false;
     let mut ip4 = None;
     for proto in addr.iter() {

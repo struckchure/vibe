@@ -38,6 +38,7 @@ libp2p = { version = "0.54", features = [
   "json",
   "cbor",
   "rendezvous",
+  "relay",
 ] }
 tauri-plugin-deep-link = "2"
 if-addrs = "0.14"

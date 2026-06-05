@@ -96,6 +96,43 @@ bun run tauri ios dev --config '{"build":{"beforeDevCommand":""}}' --no-dev-serv
 
 Run the Vite dev server separately (`bun run dev`) so the app loads `http://localhost:1420` per `tauri.conf.json`.
 
+### iOS release on a physical device
+
+`bun run tauri ios run --release` can fail with a missing `exportOptionsPlist` temp file ([tauri#14593](https://github.com/tauri-apps/tauri/issues/14593)). Use the build-and-Xcode path instead:
+
+```bash
+# Opens the Xcode project after a release build
+bun run release:ios:device
+```
+
+In Xcode: select your connected iPhone/iPad as the run destination, then **Product → Run** (⌘R).
+
+To target a specific device from the CLI (when the CLI bug is fixed):
+
+```bash
+bun run tauri ios run --release "Mohammed's iPad"
+```
+
+Unsigned IPA for CI/sideloading:
+
+```bash
+bun run release:ios
+```
+
+### Cross-network overlay
+
+Room discovery and QR-added contacts use the libp2p overlay (Kademlia DHT providers, rendezvous, circuit relay). Bootstrap/relay/rendezvous peers are configured in [`src-tauri/src/bootstrap.rs`](src-tauri/src/bootstrap.rs). Both peers must be online; DHT propagation can take up to ~30 seconds.
+
+**Manual test checklist:**
+
+| Scenario | Steps | Expected |
+|----------|-------|----------|
+| Room cross-network | Device A on cellular, B on Wi-Fi, same room code | Both see each other; offline banner clears |
+| QR / deep link | A shows QR, B opens `vibe://peer/…` (no room) | Contact added; messages deliver both ways |
+| Same LAN | Two devices on same Wi-Fi | Peers appear quickly via mDNS |
+
+For production, replace bootstrap entries with community-operated relay and rendezvous nodes (SPEC §9.1).
+
 **Recommended IDE:** VS Code with [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) and [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
 
 ## Documentation

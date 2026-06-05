@@ -8,6 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "dev:native": "tauri dev",
+    "dev:ios": "tauri ios dev",
+    "dev:android": "tauri android dev",
     "release:macos": "tauri build --target aarch64-apple-darwin --bundles dmg",
     "release:ios": "tauri ios build --target aarch64 --no-sign"
   },

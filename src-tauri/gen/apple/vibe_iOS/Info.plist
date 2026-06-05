@@ -50,5 +50,16 @@
 	<array>
 		<string>_p2p._udp</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>vibe</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>vibe</string>
+		</dict>
+	</array>
 </dict>
 </plist>

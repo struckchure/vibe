@@ -191,6 +191,10 @@ fn add_contact(
         .network
         .subscribe_conversation(&conv_id)
         .map_err(|e| e.to_string())?;
+    state
+        .network
+        .discover_peer(&peer_id)
+        .map_err(|e| e.to_string())?;
     Ok(row)
 }
 
@@ -254,6 +258,10 @@ fn start_network(state: State<'_, AppState>) -> Result<(), String> {
     state
         .network
         .subscribe_all_contacts()
+        .map_err(|e| e.to_string())?;
+    state
+        .network
+        .discover_contacts()
         .map_err(|e| e.to_string())?;
     let _ = outbox::flush_outbox(
         &state.identity.read(),
