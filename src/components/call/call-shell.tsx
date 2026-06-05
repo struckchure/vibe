@@ -30,6 +30,7 @@ export function CallShell() {
         open={!!showIncoming}
         displayName={call.pendingIncoming?.displayName ?? ""}
         media={call.pendingIncoming?.media ?? "audio"}
+        accepting={call.accepting}
         onAccept={() => void call.acceptCall()}
         onDecline={() => void call.declineCall()}
       />

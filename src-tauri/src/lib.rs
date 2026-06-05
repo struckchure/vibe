@@ -275,16 +275,19 @@ fn publish_signaling(
     payload: String,
     wait_for_delivery: Option<bool>,
 ) -> Result<(), String> {
+    let id = state.identity.read();
+    let wire = crypto_mod::wrap_signal_wire(&id.peer_id_b64(), &payload)
+        .map_err(|e| e.to_string())?;
     state.network.start().map_err(|e| e.to_string())?;
     if wait_for_delivery.unwrap_or(true) {
         state
             .network
-            .publish_signaling(&conversation_id, &payload)
+            .publish_signaling(&conversation_id, &wire)
             .map_err(|e| e.to_string())
     } else {
         state
             .network
-            .publish_signaling_best_effort(&conversation_id, &payload)
+            .publish_signaling_best_effort(&conversation_id, &wire)
             .map_err(|e| e.to_string())
     }
 }

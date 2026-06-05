@@ -19,12 +19,42 @@ export type CallSignalingMessage =
       type: "call-invite";
       media: "audio" | "video";
       sdp: RTCSessionDescriptionInit;
+      callLeg: number;
     }
-  | { type: "call-answer"; sdp: RTCSessionDescriptionInit }
-  | { type: "call-decline" }
-  | { type: "call-end" };
+  | { type: "call-answer"; sdp: RTCSessionDescriptionInit; callLeg: number }
+  | { type: "call-decline"; callLeg: number }
+  | { type: "call-end"; callLeg: number };
 
 export type SignalingMessage = TextSignalingMessage | CallSignalingMessage;
+
+export type SignalingEnvelope = SignalingMessage & { from?: string };
+
+/** Outer gossip envelope (Rust SignalWire); legacy payloads pass through as ciphertext. */
+type SignalWireOuter = {
+  senderPeerId?: string;
+  payload?: string;
+};
+
+function unwrapSignalingWire(raw: string): string | null {
+  try {
+    const outer = JSON.parse(raw) as SignalWireOuter;
+    if (
+      typeof outer.senderPeerId === "string" &&
+      typeof outer.payload === "string"
+    ) {
+      if (
+        signalingLocalPeerId &&
+        outer.senderPeerId === signalingLocalPeerId
+      ) {
+        return null;
+      }
+      return outer.payload;
+    }
+  } catch {
+    /* legacy: raw encrypted blob */
+  }
+  return raw;
+}
 
 export function isCallSignal(
   msg: SignalingMessage
@@ -47,10 +77,132 @@ export type PeerConnectionState = {
   ignoreOffer: boolean;
   channel: RTCDataChannel | null;
   onRemoteTrack: ((stream: MediaStream) => void) | null;
+  pendingIce: RTCIceCandidateInit[];
+  /** Accumulated remote tracks for call PCs (iOS may omit ev.streams[0]). */
+  remoteMediaStream: MediaStream | null;
 };
+
+export function sessionDescriptionPayload(
+  desc: RTCSessionDescription | RTCSessionDescriptionInit | null | undefined
+): RTCSessionDescriptionInit | null {
+  if (!desc?.type || !desc.sdp) return null;
+  return { type: desc.type, sdp: desc.sdp };
+}
+
+export async function applyRemoteDescription(
+  pc: RTCPeerConnection,
+  desc: RTCSessionDescriptionInit
+) {
+  const payload = sessionDescriptionPayload(desc);
+  if (!payload) {
+    throw new Error("invalid session description");
+  }
+  await pc.setRemoteDescription(payload);
+}
+
+/** Wait until ICE gathering finishes so SDP includes connection candidates. */
+export function waitForIceGathering(
+  pc: RTCPeerConnection,
+  timeoutMs = 8000
+): Promise<void> {
+  if (pc.iceGatheringState === "complete") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const done = () => {
+      pc.removeEventListener("icegatheringstatechange", onChange);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onChange = () => {
+      if (pc.iceGatheringState === "complete") {
+        done();
+      }
+    };
+    const timer = setTimeout(done, timeoutMs);
+    pc.addEventListener("icegatheringstatechange", onChange);
+  });
+}
+
+async function addIceCandidateToPeer(
+  state: PeerConnectionState,
+  candidate: RTCIceCandidateInit
+) {
+  if (!state.pc.remoteDescription) {
+    state.pendingIce.push(candidate);
+    return;
+  }
+  try {
+    await state.pc.addIceCandidate(candidate);
+  } catch {
+    /* ignore late ICE */
+  }
+}
+
+function callIceQueueKey(conversationId: string, remotePeerId: string) {
+  return `${conversationId}:${remotePeerId}`;
+}
+
+/** ICE received while ringing (no call PC) — testclient iceQueue equivalent. */
+const orphanedCallIce = new Map<string, RTCIceCandidateInit[]>();
+
+function queueOrphanedCallIce(
+  conversationId: string,
+  remotePeerId: string,
+  candidate: RTCIceCandidateInit
+) {
+  const key = callIceQueueKey(conversationId, remotePeerId);
+  const queue = orphanedCallIce.get(key) ?? [];
+  queue.push(candidate);
+  orphanedCallIce.set(key, queue);
+}
+
+export function clearOrphanedCallIce(
+  conversationId: string,
+  remotePeerId: string
+) {
+  orphanedCallIce.delete(callIceQueueKey(conversationId, remotePeerId));
+}
+
+export async function flushOrphanedCallIce(state: PeerConnectionState) {
+  const key = callIceQueueKey(state.conversationId, state.remotePeerId);
+  const queued = orphanedCallIce.get(key);
+  if (!queued?.length || !state.pc.remoteDescription) {
+    return;
+  }
+  orphanedCallIce.delete(key);
+  for (const candidate of queued) {
+    await addIceCandidateToPeer(state, candidate);
+  }
+}
+
+export async function flushPendingIce(state: PeerConnectionState) {
+  if (!state.pc.remoteDescription) {
+    return;
+  }
+  await flushOrphanedCallIce(state);
+  if (state.pendingIce.length === 0) {
+    return;
+  }
+  const queued = state.pendingIce.splice(0);
+  for (const candidate of queued) {
+    try {
+      await state.pc.addIceCandidate(candidate);
+    } catch {
+      /* ignore late ICE */
+    }
+  }
+}
 
 const peers = new Map<string, PeerConnectionState>();
 const callPeers = new Map<string, PeerConnectionState>();
+
+let signalingLocalPeerId: string | null = null;
+
+/** Set before publishing so gossipsub self-echo can be dropped in dispatch. */
+export function setSignalingLocalPeerId(peerId: string) {
+  signalingLocalPeerId = peerId;
+}
 
 let textTransportPaused = false;
 
@@ -117,8 +269,13 @@ export function teardownConversationSignaling(conversationId: string) {
 async function dispatchSignaling(
   remotePeerId: string,
   conversationId: string,
-  encryptedPayload: string
+  wirePayload: string
 ) {
+  const encryptedPayload = unwrapSignalingWire(wirePayload);
+  if (!encryptedPayload) {
+    return;
+  }
+
   let plaintext: string;
   try {
     plaintext = await api.decryptSignaling(remotePeerId, encryptedPayload);
@@ -126,12 +283,22 @@ async function dispatchSignaling(
     return;
   }
 
-  let msg: SignalingMessage;
+  let envelope: SignalingEnvelope;
   try {
-    msg = JSON.parse(plaintext) as SignalingMessage;
+    envelope = JSON.parse(plaintext) as SignalingEnvelope;
   } catch {
     return;
   }
+
+  if (
+    envelope.from &&
+    signalingLocalPeerId &&
+    envelope.from === signalingLocalPeerId
+  ) {
+    return;
+  }
+
+  const { from: _from, ...msg } = envelope;
 
   if (isCallSignal(msg)) {
     await callSignalingHandler?.(remotePeerId, conversationId, msg);
@@ -141,11 +308,7 @@ async function dispatchSignaling(
   if (msg.type === "ice" && msg.candidate) {
     const callPeer = callPeers.get(remotePeerId);
     if (callPeer?.conversationId === conversationId) {
-      try {
-        await callPeer.pc.addIceCandidate(msg.candidate);
-      } catch {
-        /* ignore late ICE */
-      }
+      await addIceCandidateToPeer(callPeer, msg.candidate);
       return;
     }
     const textPeer = peers.get(remotePeerId);
@@ -155,6 +318,10 @@ async function dispatchSignaling(
       } catch {
         /* ignore late ICE */
       }
+      return;
+    }
+    if (textTransportPaused) {
+      queueOrphanedCallIce(conversationId, remotePeerId, msg.candidate);
     }
     return;
   }
@@ -236,9 +403,12 @@ export async function publishSignalingMessage(
   msg: SignalingMessage,
   options?: { waitForDelivery?: boolean }
 ) {
+  const body: SignalingEnvelope = signalingLocalPeerId
+    ? { ...msg, from: signalingLocalPeerId }
+    : msg;
   const encrypted = await api.encryptSignaling(
     remotePeerId,
-    JSON.stringify(msg)
+    JSON.stringify(body)
   );
   await publishEncryptedSignaling(
     conversationId,
@@ -261,6 +431,10 @@ async function handleTextSignaling(
   state: PeerConnectionState,
   msg: TextSignalingMessage
 ) {
+  if (textTransportPaused) {
+    return;
+  }
+
   const { pc, polite } = state;
 
   try {
@@ -291,6 +465,46 @@ async function handleTextSignaling(
   } catch {
     /* ignore stale signaling */
   }
+}
+
+function mergeRemoteTracks(
+  state: PeerConnectionState,
+  tracks: MediaStreamTrack[]
+) {
+  if (tracks.length === 0) return;
+  let stream = state.remoteMediaStream;
+  if (!stream) {
+    stream = new MediaStream();
+    state.remoteMediaStream = stream;
+  }
+  let added = false;
+  for (const track of tracks) {
+    if (!stream.getTracks().some((t) => t.id === track.id)) {
+      stream.addTrack(track);
+      track.enabled = true;
+      added = true;
+    }
+  }
+  if (added) {
+    state.onRemoteTrack?.(stream);
+  }
+}
+
+function tracksFromTrackEvent(ev: RTCTrackEvent): MediaStreamTrack[] {
+  const fromStream = ev.streams?.[0]?.getTracks();
+  if (fromStream?.length) {
+    return fromStream;
+  }
+  return ev.track ? [ev.track] : [];
+}
+
+/** Replay tracks already on the PC (e.g. after setRemoteDescription). */
+export function syncCallRemoteTracks(state: PeerConnectionState): void {
+  const tracks = state.pc
+    .getReceivers()
+    .map((r) => r.track)
+    .filter((t): t is MediaStreamTrack => t != null && t.readyState !== "ended");
+  mergeRemoteTracks(state, tracks);
 }
 
 function attachDataChannel(state: PeerConnectionState, dc: RTCDataChannel) {
@@ -341,10 +555,14 @@ async function wirePeerConnection(
   }
 
   pc.ontrack = (ev) => {
-    const stream = ev.streams[0];
-    if (stream) {
-      state.onRemoteTrack?.(stream);
+    if (options.textChannel) {
+      const stream = ev.streams[0];
+      if (stream) {
+        state.onRemoteTrack?.(stream);
+      }
+      return;
     }
+    mergeRemoteTracks(state, tracksFromTrackEvent(ev));
   };
 
   pc.onconnectionstatechange = () => {
@@ -372,6 +590,8 @@ export async function createPeerConnection(
     ignoreOffer: false,
     channel: null,
     onRemoteTrack: null,
+    pendingIce: [],
+    remoteMediaStream: null,
   };
 
   await wirePeerConnection(state, { textChannel: true });
@@ -397,6 +617,8 @@ async function createCallPeerConnection(
     ignoreOffer: false,
     channel: null,
     onRemoteTrack: null,
+    pendingIce: [],
+    remoteMediaStream: null,
   };
 
   await wirePeerConnection(state, { textChannel: false });
@@ -434,6 +656,8 @@ export function getCallPeerConnection(
 export function closeCallPeerConnection(remotePeerId: string): void {
   const state = callPeers.get(remotePeerId);
   if (!state) return;
+  state.remoteMediaStream = null;
+  state.onRemoteTrack = null;
   state.pc.close();
   callPeers.delete(remotePeerId);
 }
@@ -446,41 +670,6 @@ export async function ensureCallPeerConnection(
 ): Promise<PeerConnectionState> {
   closeCallPeerConnection(remotePeerId);
   return createCallPeerConnection(localPeerId, remotePeerId, conversationId);
-}
-
-/** Apply the caller's offer on a call PC so ICE can trickle before the callee answers. */
-export async function prepareCallPeerForIncomingOffer(
-  localPeerId: string,
-  remotePeerId: string,
-  conversationId: string,
-  offer: RTCSessionDescriptionInit
-): Promise<PeerConnectionState> {
-  let state = callPeers.get(remotePeerId);
-  if (!state || state.conversationId !== conversationId) {
-    closeCallPeerConnection(remotePeerId);
-    state = await createCallPeerConnection(
-      localPeerId,
-      remotePeerId,
-      conversationId
-    );
-  }
-
-  if (state.pc.signalingState === "have-remote-offer") {
-    return state;
-  }
-  if (state.pc.signalingState === "stable") {
-    await state.pc.setRemoteDescription(offer);
-    return state;
-  }
-
-  closeCallPeerConnection(remotePeerId);
-  state = await createCallPeerConnection(
-    localPeerId,
-    remotePeerId,
-    conversationId
-  );
-  await state.pc.setRemoteDescription(offer);
-  return state;
 }
 
 export async function ensureTextTransport(

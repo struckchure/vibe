@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { toast } from "sonner";
 
 import type { Conversation } from "@/types/chat";
@@ -26,6 +32,7 @@ export function useCall(
     getCallSnapshot,
     getCallSnapshot
   );
+  const [accepting, setAccepting] = useState(false);
 
   const contactsKey = useMemo(
     () =>
@@ -83,13 +90,17 @@ export function useCall(
   );
 
   const handleAccept = useCallback(async () => {
+    if (accepting) return;
+    setAccepting(true);
     try {
       const localId = await getLocalPeerId();
       await acceptCall(localId);
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setAccepting(false);
     }
-  }, [getLocalPeerId]);
+  }, [accepting, getLocalPeerId]);
 
   const handleDecline = useCallback(async () => {
     await declineCall();
@@ -111,6 +122,7 @@ export function useCall(
   return useMemo(
     () => ({
       ...snapshot,
+      accepting,
       isBusy: isCallBusy(),
       startVoiceCall,
       startVideoCall,
@@ -122,6 +134,7 @@ export function useCall(
     }),
     [
       snapshot,
+      accepting,
       startVoiceCall,
       startVideoCall,
       handleAccept,

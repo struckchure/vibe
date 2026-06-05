@@ -34,6 +34,33 @@ pub struct WireRead {
     pub conversation_id: String,
 }
 
+/// Gossip envelope for encrypted signaling — enables self-echo filtering in the swarm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalWire {
+    pub sender_peer_id: String,
+    pub payload: String,
+}
+
+pub fn wrap_signal_wire(sender_peer_id: &str, inner_payload: &str) -> Result<String> {
+    Ok(serde_json::to_string(&SignalWire {
+        sender_peer_id: sender_peer_id.to_string(),
+        payload: inner_payload.to_string(),
+    })?)
+}
+
+/// Returns `None` if the message is our own publish (should not reach the UI).
+pub fn signal_wire_emit_payload(identity: &Identity, raw: &str) -> Option<String> {
+    let wire: SignalWire = match serde_json::from_str(raw) {
+        Ok(w) => w,
+        Err(_) => return Some(raw.to_string()),
+    };
+    if wire.sender_peer_id == identity.peer_id_b64() {
+        return None;
+    }
+    Some(wire.payload)
+}
+
 pub fn conversation_id(local: &[u8; 32], remote: &[u8; 32]) -> String {
     let (a, b) = if local < remote {
         (local, remote)

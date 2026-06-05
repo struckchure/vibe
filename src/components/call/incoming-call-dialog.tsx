@@ -15,6 +15,7 @@ type IncomingCallDialogProps = {
   open: boolean;
   displayName: string;
   media: CallMedia;
+  accepting?: boolean;
   onAccept: () => void;
   onDecline: () => void;
 };
@@ -32,19 +33,18 @@ export function IncomingCallDialog({
   open,
   displayName,
   media,
+  accepting = false,
   onAccept,
   onDecline,
 }: IncomingCallDialogProps) {
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen && open) {
-          onDecline();
-        }
-      }}
-    >
-      <DialogContent className="z-[200] max-w-sm">
+    <Dialog open={open}>
+      <DialogContent
+        className="z-[200] max-w-sm"
+        showCloseButton={false}
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader className="items-center text-center">
           <Avatar className="size-20">
             <AvatarFallback className="text-lg">
@@ -61,7 +61,8 @@ export function IncomingCallDialog({
             variant="destructive"
             size="icon"
             className="size-14 rounded-full"
-            onClick={onDecline}
+            disabled={accepting}
+            onClick={() => onDecline()}
             aria-label="Decline"
           >
             <PhoneOffIcon className="size-6" />
@@ -69,10 +70,13 @@ export function IncomingCallDialog({
           <Button
             size="icon"
             className="size-14 rounded-full"
-            onClick={onAccept}
+            disabled={accepting}
+            onClick={() => onAccept()}
             aria-label="Accept"
           >
-            {media === "video" ? (
+            {accepting ? (
+              <span className="text-xs font-medium">…</span>
+            ) : media === "video" ? (
               <VideoIcon className="size-6" />
             ) : (
               <PhoneIcon className="size-6" />

@@ -63,7 +63,15 @@ function VideoEl({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    if (!stream) {
+      el.srcObject = null;
+      return;
+    }
+    if (el.srcObject === stream) {
+      return;
+    }
     el.srcObject = stream;
+    void el.play().catch(() => {});
   }, [stream]);
 
   return (
@@ -94,13 +102,45 @@ export function CallOverlay({
   const cameraOff = videoTrack ? !videoTrack.enabled : false;
 
   const status = phaseLabel(call.phase);
-  const showVideo = call.media === "video";
+  const remoteHasVideo =
+    remoteStream?.getVideoTracks().some((t) => t.readyState !== "ended") ??
+    false;
+  const showRemoteVideo =
+    call.media === "video" || remoteHasVideo;
+  const remoteHasAudio =
+    remoteStream?.getAudioTracks().some((t) => t.readyState !== "ended") ??
+    false;
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const el = remoteAudioRef.current;
+    if (!el) return;
+    if (!remoteStream || !remoteHasAudio) {
+      el.srcObject = null;
+      return;
+    }
+    if (el.srcObject === remoteStream) {
+      return;
+    }
+    el.srcObject = remoteStream;
+    void el.play().catch(() => {});
+  }, [remoteStream, remoteHasAudio]);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      {showVideo && remoteStream ? (
+      {remoteHasAudio ? (
+        <audio
+          ref={remoteAudioRef}
+          autoPlay
+          playsInline
+          className="sr-only"
+          aria-hidden
+        />
+      ) : null}
+      {showRemoteVideo && remoteStream ? (
         <VideoEl
           stream={remoteStream}
+          muted
           className="absolute inset-0 size-full object-cover bg-black"
         />
       ) : (
@@ -128,7 +168,7 @@ export function CallOverlay({
           </p>
         </header>
 
-        {showVideo && localStream ? (
+        {call.media === "video" && localStream ? (
           <div className="pointer-events-none absolute right-4 top-24 size-28 overflow-hidden rounded-lg border-2 border-background shadow-lg">
             <VideoEl
               stream={localStream}

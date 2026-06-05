@@ -849,14 +849,16 @@ fn handle_behaviour_event(
 
             if topic.starts_with("vibe/signal/") {
                 let conv = topic.strip_prefix("vibe/signal/").unwrap_or("");
-                let payload = String::from_utf8_lossy(&message.data).to_string();
-                let _ = app.emit(
-                    "signaling",
-                    serde_json::json!({
-                        "conversationId": conv,
-                        "payload": payload,
-                    }),
-                );
+                let raw = String::from_utf8_lossy(&message.data).to_string();
+                if let Some(payload) = crypto::signal_wire_emit_payload(identity, &raw) {
+                    let _ = app.emit(
+                        "signaling",
+                        serde_json::json!({
+                            "conversationId": conv,
+                            "payload": payload,
+                        }),
+                    );
+                }
             }
 
             if topic.starts_with("vibe/msg/") {

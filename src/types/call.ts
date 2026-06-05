@@ -21,4 +21,6 @@ export type ActiveCall = {
   connectedAt: number | null;
   /** True after call-invite was sent or received over signaling. */
   signaled: boolean;
+  /** Matches callLeg on invite/answer/decline/end to ignore gossipsub stale signals. */
+  callLeg: number;
 };
