@@ -21,6 +21,12 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["vibe"] }],
+      "desktop": [{ "schemes": ["vibe"] }]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

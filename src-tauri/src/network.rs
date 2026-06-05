@@ -8,7 +8,9 @@ use base64::Engine;
 use futures::StreamExt;
 use libp2p::gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode};
 use libp2p::identify;
+use libp2p::kad::{self, store::MemoryStore};
 use libp2p::mdns;
+use libp2p::rendezvous;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::{NetworkBehaviour, StreamProtocol, SwarmEvent};
 use libp2p::{multiaddr::Protocol, noise, tcp, yamux, Multiaddr, PeerId, SwarmBuilder};
@@ -68,6 +70,8 @@ struct Behaviour {
     mdns: mdns::tokio::Behaviour,
     identify: identify::Behaviour,
     room_announce: request_response::json::Behaviour<RoomAnnounceReq, RoomAnnounceResp>,
+    kademlia: kad::Behaviour<MemoryStore>,
+    rendezvous: rendezvous::client::Behaviour,
 }
 
 pub enum NetworkCommand {
@@ -395,11 +399,21 @@ async fn run_swarm(
         request_response::Config::default(),
     );
 
+    let kademlia = kad::Behaviour::with_config(
+        local_peer_id,
+        MemoryStore::new(local_peer_id),
+        kad::Config::new(kad::PROTOCOL_NAME),
+    );
+
+    let rendezvous_client = rendezvous::client::Behaviour::new(local_key.clone());
+
     let behaviour = Behaviour {
         gossipsub,
         mdns: mdns_behaviour,
         identify,
         room_announce,
+        kademlia,
+        rendezvous: rendezvous_client,
     };
 
     let mut swarm = SwarmBuilder::with_existing_identity(local_key)
@@ -414,10 +428,14 @@ async fn run_swarm(
         .build();
 
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    if let Err(e) = bootstrap_overlay(&mut swarm) {
+        eprintln!("overlay bootstrap: {e}");
+    }
 
     let mut announce_interval = tokio::time::interval(Duration::from_secs(5));
     let mut room_topic: Option<IdentTopic> = None;
     let mut presence_topic: Option<IdentTopic> = None;
+    let mut room_code_active: Option<String> = None;
     let mut listen_addrs: Vec<Multiaddr> = Vec::new();
     let mut subscribed_conversations: HashSet<String> = HashSet::new();
     let mut announced_room_to: HashSet<PeerId> = HashSet::new();
@@ -428,8 +446,13 @@ async fn run_swarm(
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         if !listen_addrs.contains(&address) {
-                            listen_addrs.push(address);
+                            listen_addrs.push(address.clone());
                         }
+                        swarm.add_external_address(address.clone());
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .add_address(&local_peer_id, address);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         if peer_id != local_peer_id {
@@ -515,8 +538,10 @@ async fn run_swarm(
                         }
                         room_topic = Some(topic);
                         presence_topic = Some(presence);
+                        room_code_active = Some(code.clone());
                         *current_room.write() = Some(code.clone());
                         room_peers.write().clear();
+                        rendezvous_register(&mut swarm, &hash);
                         publish_room_presence(
                             &mut swarm,
                             &identity,
@@ -527,6 +552,8 @@ async fn run_swarm(
                     }
                     NetworkCommand::LeaveRoom => {
                         if let Some(code) = current_room.read().clone() {
+                            let hash = room_topic_hash(&code);
+                            rendezvous_unregister(&mut swarm, &hash);
                             let name = display_name.read().clone();
                             publish_room_presence(
                                 &mut swarm,
@@ -543,6 +570,7 @@ async fn run_swarm(
                             let _ = swarm.behaviour_mut().gossipsub.unsubscribe(&t);
                         }
                         *current_room.write() = None;
+                        room_code_active = None;
                         room_peers.write().clear();
                         announced_room_to.clear();
                     }
@@ -658,6 +686,13 @@ async fn run_swarm(
                         eprintln!("publish announce: {e}");
                     }
                 }
+                if let Some(code) = room_code_active.clone() {
+                    let name = display_name.read().clone();
+                    let hash = room_topic_hash(&code);
+                    publish_room_to_dht(&mut swarm, &identity, &name, &listen_addrs, &code);
+                    rendezvous_register(&mut swarm, &hash);
+                    rendezvous_discover(&mut swarm, &hash);
+                }
             }
         }
         let _ = started;
@@ -751,6 +786,144 @@ fn dial_addrs(swarm: &mut libp2p::Swarm<Behaviour>, addrs: Vec<Multiaddr>) {
     }
 }
 
+fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
+    addr.iter().find_map(|p| {
+        if let Protocol::P2p(id) = p {
+            Some(id)
+        } else {
+            None
+        }
+    })
+}
+
+fn room_dht_key(room_code: &str) -> kad::RecordKey {
+    kad::RecordKey::new(&format!("vibe-room-{}", room_topic_hash(room_code)))
+}
+
+fn room_rendezvous_namespace(room_hash: &str) -> Option<rendezvous::Namespace> {
+    rendezvous::Namespace::new(format!("vibe/room/{room_hash}")).ok()
+}
+
+fn bootstrap_overlay(swarm: &mut libp2p::Swarm<Behaviour>) -> Result<()> {
+    for addr_str in crate::bootstrap::BOOTSTRAP_PEERS {
+        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+            if let Some(peer_id) = peer_id_from_multiaddr(&addr) {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, addr.clone());
+            }
+            let _ = swarm.dial(addr);
+        }
+    }
+    for addr_str in crate::bootstrap::RENDEZVOUS_PEERS {
+        if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+            if let Some(peer_id) = peer_id_from_multiaddr(&addr) {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, addr.clone());
+            }
+            let _ = swarm.dial(addr);
+        }
+    }
+    swarm.behaviour_mut().kademlia.bootstrap()?;
+    Ok(())
+}
+
+fn publish_room_to_dht(
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    identity: &Identity,
+    display_name: &str,
+    listen_addrs: &[Multiaddr],
+    room_code: &str,
+) {
+    let wire = build_signed_announce(identity, display_name, listen_addrs);
+    let bytes = match serde_json::to_vec(&wire) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let key = room_dht_key(room_code);
+    let record = kad::Record {
+        key: key.clone(),
+        value: bytes,
+        publisher: None,
+        expires: None,
+    };
+    if let Err(e) = swarm
+        .behaviour_mut()
+        .kademlia
+        .put_record(record, kad::Quorum::One)
+    {
+        eprintln!("dht put_record: {e}");
+    }
+    swarm.behaviour_mut().kademlia.get_record(key);
+}
+
+fn rendezvous_register(swarm: &mut libp2p::Swarm<Behaviour>, room_hash: &str) {
+    if crate::bootstrap::RENDEZVOUS_PEERS.is_empty() {
+        return;
+    }
+    let Some(namespace) = room_rendezvous_namespace(room_hash) else {
+        return;
+    };
+    for addr_str in crate::bootstrap::RENDEZVOUS_PEERS {
+        let Ok(addr) = addr_str.parse::<Multiaddr>() else {
+            continue;
+        };
+        let Some(rz_peer) = peer_id_from_multiaddr(&addr) else {
+            continue;
+        };
+        if let Err(e) = swarm.behaviour_mut().rendezvous.register(
+            namespace.clone(),
+            rz_peer,
+            Some(600),
+        ) {
+            eprintln!("rendezvous register: {e}");
+        }
+    }
+}
+
+fn rendezvous_discover(swarm: &mut libp2p::Swarm<Behaviour>, room_hash: &str) {
+    if crate::bootstrap::RENDEZVOUS_PEERS.is_empty() {
+        return;
+    }
+    let namespace = room_rendezvous_namespace(room_hash);
+    for addr_str in crate::bootstrap::RENDEZVOUS_PEERS {
+        let Ok(addr) = addr_str.parse::<Multiaddr>() else {
+            continue;
+        };
+        let Some(rz_peer) = peer_id_from_multiaddr(&addr) else {
+            continue;
+        };
+        swarm
+            .behaviour_mut()
+            .rendezvous
+            .discover(namespace.clone(), None, Some(25), rz_peer);
+    }
+}
+
+fn rendezvous_unregister(swarm: &mut libp2p::Swarm<Behaviour>, room_hash: &str) {
+    if crate::bootstrap::RENDEZVOUS_PEERS.is_empty() {
+        return;
+    }
+    let Some(namespace) = room_rendezvous_namespace(room_hash) else {
+        return;
+    };
+    for addr_str in crate::bootstrap::RENDEZVOUS_PEERS {
+        let Ok(addr) = addr_str.parse::<Multiaddr>() else {
+            continue;
+        };
+        let Some(rz_peer) = peer_id_from_multiaddr(&addr) else {
+            continue;
+        };
+        swarm
+            .behaviour_mut()
+            .rendezvous
+            .unregister(namespace.clone(), rz_peer);
+    }
+}
+
 fn subscribe_conversation_topics(
     swarm: &mut libp2p::Swarm<Behaviour>,
     subscribed: &mut HashSet<String>,
@@ -787,9 +960,39 @@ fn handle_behaviour_event(
     subscribed_conversations: &mut HashSet<String>,
 ) -> Option<Vec<Multiaddr>> {
     use gossipsub::Event as GossipEvent;
+    use kad::{GetRecordOk, QueryResult};
     use request_response::Event as RrEvent;
 
     match event {
+        BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed { result, .. }) => {
+            if let QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(peer_record))) = result {
+                if let Ok(announce) =
+                    serde_json::from_slice::<WireAnnounce>(&peer_record.record.value)
+                {
+                    return apply_room_announce(&announce, identity, room_peers, app);
+                }
+            }
+        }
+        BehaviourEvent::Rendezvous(rendezvous::client::Event::Discovered { registrations, .. }) => {
+            let local = *swarm.local_peer_id();
+            let mut dial = Vec::new();
+            for reg in registrations {
+                let peer = reg.record.peer_id();
+                if peer == local {
+                    continue;
+                }
+                for addr in reg.record.addresses() {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer, addr.clone());
+                    dial.push(addr.clone());
+                }
+            }
+            if !dial.is_empty() {
+                return Some(dial);
+            }
+        }
         BehaviourEvent::Mdns(mdns::Event::Discovered(list)) => {
             let mut dial = Vec::new();
             for (peer_id, multiaddr) in list {

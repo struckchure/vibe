@@ -11,6 +11,7 @@
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "os:default"
+    "os:default",
+    "deep-link:default"
   ]
 }

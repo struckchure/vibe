@@ -37,7 +37,9 @@ libp2p = { version = "0.54", features = [
   "request-response",
   "json",
   "cbor",
+  "rendezvous",
 ] }
+tauri-plugin-deep-link = "2"
 if-addrs = "0.14"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"

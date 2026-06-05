@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { UserPlusIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -35,6 +35,7 @@ type DiscoveryDialogsProps = {
   joinRoomOpen: boolean;
   onJoinRoomOpenChange: (open: boolean) => void;
   onContactAdded: () => void;
+  contactPeerIds: ReadonlySet<string>;
 };
 
 export function DiscoveryDialogs({
@@ -43,6 +44,7 @@ export function DiscoveryDialogs({
   joinRoomOpen,
   onJoinRoomOpenChange,
   onContactAdded,
+  contactPeerIds,
 }: DiscoveryDialogsProps) {
   const [peerIdInput, setPeerIdInput] = useState("");
   const [displayNameInput, setDisplayNameInput] = useState("");
@@ -52,6 +54,7 @@ export function DiscoveryDialogs({
   const [roomActivity, setRoomActivity] = useState<api.RoomEvent[]>([]);
   const [inRoom, setInRoom] = useState(false);
   const [joining, setJoining] = useState(false);
+  const toastedJoinPeers = useRef(new Set<string>());
 
   useEffect(() => {
     if (!joinRoomOpen) return;
@@ -82,6 +85,10 @@ export function DiscoveryDialogs({
         if (prev.some((p) => p.peerId === peer.peerId)) return prev;
         return [...prev, peer];
       });
+      if (!toastedJoinPeers.current.has(peer.peerId)) {
+        toastedJoinPeers.current.add(peer.peerId);
+        toast.message(`${peer.displayName} joined the room`);
+      }
     });
     const unlistenEvent = api.onRoomEvent((event) => {
       setRoomActivity((prev) => [...prev, event].slice(-50));
@@ -157,6 +164,7 @@ export function DiscoveryDialogs({
 
   const handleAddFromRoom = useCallback(
     async (peer: api.RoomPeer) => {
+      if (contactPeerIds.has(peer.peerId)) return;
       try {
         await api.addContact(peer.peerId, peer.displayName);
         toast.success(`Added ${peer.displayName}`);
@@ -165,7 +173,7 @@ export function DiscoveryDialogs({
         toast.error(String(e));
       }
     },
-    [onContactAdded]
+    [contactPeerIds, onContactAdded],
   );
 
   return (
@@ -237,8 +245,9 @@ export function DiscoveryDialogs({
                   }}
                 />
                 <FieldDescription>
-                  Temporary lobby to discover contacts on the network. After
-                  you add each other, you can chat without staying in the room.
+                  Discover people on the same room code (works across cellular
+                  and Wi-Fi). After you add each other, you can chat without
+                  staying in the room.
                 </FieldDescription>
               </Field>
             </FieldGroup>
@@ -276,24 +285,28 @@ export function DiscoveryDialogs({
                       Waiting for others in the room…
                     </p>
                   ) : (
-                    roomPeers.map((peer) => (
-                      <Item key={peer.peerId} size="sm">
-                        <ItemContent>
-                          <ItemTitle>{peer.displayName}</ItemTitle>
-                          <ItemDescription className="font-mono">
-                            {peer.peerId.slice(0, 20)}…
-                          </ItemDescription>
-                        </ItemContent>
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          onClick={() => void handleAddFromRoom(peer)}
-                        >
-                          <UserPlusIcon data-icon="inline-start" />
-                          Add
-                        </Button>
-                      </Item>
-                    ))
+                    roomPeers.map((peer) => {
+                      const added = contactPeerIds.has(peer.peerId);
+                      return (
+                        <Item key={peer.peerId} size="sm">
+                          <ItemContent>
+                            <ItemTitle>{peer.displayName}</ItemTitle>
+                            <ItemDescription className="font-mono">
+                              {peer.peerId.slice(0, 20)}…
+                            </ItemDescription>
+                          </ItemContent>
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            disabled={added}
+                            onClick={() => void handleAddFromRoom(peer)}
+                          >
+                            <UserPlusIcon data-icon="inline-start" />
+                            {added ? "Added" : "Add"}
+                          </Button>
+                        </Item>
+                      );
+                    })
                   )}
                 </ItemGroup>
               </ScrollArea>

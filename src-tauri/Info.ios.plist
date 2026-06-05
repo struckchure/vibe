@@ -6,5 +6,11 @@
 	<string>Vibe needs microphone access for voice and video calls.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Vibe needs camera access for video calls.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Vibe uses the local network for faster peer discovery when you are on the same Wi-Fi. Internet access is also used to find contacts in your room across any network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_p2p._udp</string>
+	</array>
 </dict>
 </plist>

@@ -59,6 +59,11 @@ export function ChatLayout() {
     })();
   }, [conversations, getLocalPeerId]);
 
+  const contactPeerIds = useMemo(
+    () => new Set(conversations.map((c) => c.peerId)),
+    [conversations],
+  );
+
   const selected = useMemo(
     () => conversations.find((c) => c.id === selectedId) ?? null,
     [conversations, selectedId],
@@ -146,8 +151,8 @@ export function ChatLayout() {
         {overlayPeers === 0 ? (
           <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
             Offline — you can still send messages; they will deliver when you
-            reconnect. Join a room with the same code as your contacts to
-            discover them on the network.
+            reconnect. Join a room or add a contact via QR to get on the
+            network.
           </p>
         ) : null}
         {isDesktop ? (
@@ -201,6 +206,7 @@ export function ChatLayout() {
         joinRoomOpen={joinRoomOpen}
         onJoinRoomOpenChange={setJoinRoomOpen}
         onContactAdded={() => void refreshContacts()}
+        contactPeerIds={contactPeerIds}
       />
     </>
   );
