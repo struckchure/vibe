@@ -128,7 +128,7 @@ export function CallOverlay({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      {remoteHasAudio ? (
+      {remoteHasAudio && (
         <audio
           ref={remoteAudioRef}
           autoPlay
@@ -136,7 +136,7 @@ export function CallOverlay({
           className="sr-only"
           aria-hidden
         />
-      ) : null}
+      )}
       {showRemoteVideo && remoteStream ? (
         <VideoEl
           stream={remoteStream}
@@ -168,7 +168,7 @@ export function CallOverlay({
           </p>
         </header>
 
-        {call.media === "video" && localStream ? (
+        {call.media === "video" && localStream && (
           <div className="pointer-events-none absolute right-4 top-24 size-28 overflow-hidden rounded-lg border-2 border-background shadow-lg">
             <VideoEl
               stream={localStream}
@@ -177,7 +177,7 @@ export function CallOverlay({
               className="size-full object-cover"
             />
           </div>
-        ) : null}
+        )}
 
         <div className="mt-auto shrink-0 pb-10 pt-6">
           <CallControls

@@ -8,22 +8,22 @@ import * as api from "@/lib/tauri";
 import { setupCallSignaling } from "@/lib/calls";
 
 export function useCallEngine() {
-  const contacts = useListContacts();
-  const localPeerId = useLocalPeerId();
+  const listContactQuery = useListContacts();
+  const localPeerIdQuery = useLocalPeerId();
 
   useEffect(() => {
     async function setup() {
-      if (!localPeerId.data) {
+      if (!localPeerIdQuery.data) {
         return;
       }
       await api.startNetwork();
-      const list = (contacts.data ?? []).map((c) => ({
+      const list = (listContactQuery.data ?? []).map((c) => ({
         peerId: c.peerId,
         displayName: c.displayName,
         conversationId: c.conversationId,
       }));
-      await setupCallSignaling(localPeerId.data, list);
+      await setupCallSignaling(localPeerIdQuery.data, list);
     }
     void setup();
-  }, [contacts.data, localPeerId.data]);
+  }, [listContactQuery.data, localPeerIdQuery.data]);
 }

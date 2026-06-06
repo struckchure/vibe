@@ -55,7 +55,7 @@ export function CallShell() {
         onDecline={decline}
       />
 
-      {showCallOverlay && active ? (
+      {showCallOverlay && active && (
         <CallOverlay
           call={active}
           localStream={localStream}
@@ -64,7 +64,7 @@ export function CallShell() {
           onToggleCamera={toggleCamera ?? (() => {})}
           onEnd={end}
         />
-      ) : null}
+      )}
     </>
   );
 }

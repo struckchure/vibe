@@ -8,7 +8,7 @@ import { parsePeerInviteUrl } from "@/lib/peer-id";
 import { contactKeys } from "@/lib/query-keys";
 
 export function usePeerInviteDeepLink() {
-  const addContact = useAddContact();
+  const addContactMutation = useAddContact();
   const queryClient = useQueryClient();
   const processed = useRef(new Set<string>());
 
@@ -18,7 +18,7 @@ export function usePeerInviteDeepLink() {
       if (!peerId || processed.current.has(peerId)) return;
       processed.current.add(peerId);
 
-      addContact.mutate(
+      addContactMutation.mutate(
         {
           peerId,
           displayName: `Contact ${peerId.slice(0, 8)}`,
@@ -48,5 +48,5 @@ export function usePeerInviteDeepLink() {
     return () => {
       pending.then((unlisten) => unlisten());
     };
-  }, [addContact, queryClient]);
+  }, [addContactMutation, queryClient]);
 }

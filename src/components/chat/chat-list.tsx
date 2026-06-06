@@ -46,7 +46,9 @@ export function ChatList() {
   const { id } = routeApi.useSearch();
   const navigate = routeApi.useNavigate();
   const queryClient = useQueryClient();
-  const { data: contacts = [], isPending } = useListContacts();
+  const listContactQuery = useListContacts();
+  const contacts = listContactQuery.data ?? [];
+  const isPending = listContactQuery.isPending;
 
   const [addContactOpen, setAddContactOpen] = useState(false);
   const [joinRoomOpen, setJoinRoomOpen] = useState(false);
@@ -154,16 +156,16 @@ export function ChatList() {
                       </ItemDescription>
                     </ItemContent>
                     <div className="flex shrink-0 flex-col items-end gap-1">
-                      {c.lastMessageAt ? (
+                      {c.lastMessageAt && (
                         <span className="text-[10px] text-muted-foreground">
                           {formatTime(c.lastMessageAt)}
                         </span>
-                      ) : null}
-                      {c.unreadCount > 0 ? (
+                      )}
+                      {c.unreadCount > 0 && (
                         <span className="flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
                           {c.unreadCount > 99 ? "99+" : c.unreadCount}
                         </span>
-                      ) : null}
+                      )}
                     </div>
                   </Item>
                 </Link>

@@ -48,7 +48,7 @@ export function DiscoveryDialogs({
   contactPeerIds,
 }: DiscoveryDialogsProps) {
   const queryClient = useQueryClient();
-  const addContact = useAddContact();
+  const addContactMutation = useAddContact();
 
   const [peerIdInput, setPeerIdInput] = useState("");
   const [displayNameInput, setDisplayNameInput] = useState("");
@@ -115,7 +115,7 @@ export function DiscoveryDialogs({
       (peerId ? `Contact ${peerId.slice(0, 8)}` : "");
     if (!peerId) return;
 
-    addContact.mutate(
+    addContactMutation.mutate(
       { peerId, displayName },
       {
         onSuccess: () => {
@@ -169,7 +169,7 @@ export function DiscoveryDialogs({
   function handleAddFromRoom(peer: api.RoomPeer) {
     if (contactPeerIds.has(peer.peerId)) return;
 
-    addContact.mutate(
+    addContactMutation.mutate(
       { peerId: peer.peerId, displayName: peer.displayName },
       {
         onSuccess: () => {
@@ -213,8 +213,8 @@ export function DiscoveryDialogs({
             </Field>
           </FieldGroup>
           <DialogFooter>
-            <Button disabled={addContact.isPending} onClick={handleAddContact}>
-              {addContact.isPending ? <Spinner /> : "Add"}
+            <Button disabled={addContactMutation.isPending} onClick={handleAddContact}>
+              {addContactMutation.isPending ? <Spinner /> : "Add"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -259,7 +259,7 @@ export function DiscoveryDialogs({
             </FieldGroup>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-2">
-              {roomActivity.length > 0 ? (
+              {roomActivity.length > 0 && (
                 <ScrollArea className="max-h-24 shrink-0 rounded-md border bg-muted/30">
                   <ul className="space-y-0.5 p-2 text-xs text-muted-foreground">
                     {roomActivity.map((ev, i) => (
@@ -283,7 +283,7 @@ export function DiscoveryDialogs({
                     ))}
                   </ul>
                 </ScrollArea>
-              ) : null}
+              )}
               <ScrollArea className="max-h-48 min-h-0 flex-1">
                 <ItemGroup className="gap-1 p-1">
                   {roomPeers.length === 0 ? (
@@ -304,7 +304,7 @@ export function DiscoveryDialogs({
                           <Button
                             variant="outline"
                             size="xs"
-                            disabled={added || addContact.isPending}
+                            disabled={added || addContactMutation.isPending}
                             onClick={() => handleAddFromRoom(peer)}
                           >
                             <UserPlusIcon data-icon="inline-start" />

@@ -43,14 +43,19 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { useListContacts, useRemoveContact } from "@/hooks/contacts";
+import { useListContacts } from "@/hooks/contacts";
+import {
+  useTextChat,
+  useTextChatLoad,
+  useTextChatMarkAsRead,
+  useTextChatRemoveContact,
+  useTextChatSend,
+} from "@/hooks/text-chat";
 import { useOverlayPeers } from "@/hooks/use-overlay-peers";
-import { useTextChat } from "@/hooks/use-text-chat";
 import { useVideoChat, useVoiceChat } from "@/hooks/use-voice-chat";
 import { isCallMessage } from "@/lib/call-history";
 import { contactKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
-import { closeTextTransport } from "@/lib/webrtc";
 
 type ChatThreadProps = {
   id: string;
@@ -72,26 +77,29 @@ export function ChatThread({ id }: ChatThreadProps) {
   const navigate = routeApi.useNavigate();
   const queryClient = useQueryClient();
 
-  const contactsQuery = useListContacts();
-  const text = useTextChat();
+  const listContactQuery = useListContacts();
+  const textChat = useTextChat();
+  const loadTextChatMutation = useTextChatLoad();
+  const sendTextChatMutation = useTextChatSend();
+  const markTextChatAsReadMutation = useTextChatMarkAsRead();
+  const removeContactMutation = useTextChatRemoveContact();
   const voice = useVoiceChat();
   const video = useVideoChat();
-  const removeContact = useRemoveContact();
   const overlayPeers = useOverlayPeers();
 
   const contact = useMemo(
-    () => contactsQuery.data?.find((c) => c.conversationId === id),
-    [contactsQuery.data, id],
+    () => listContactQuery.data?.find((c) => c.conversationId === id),
+    [listContactQuery.data, id],
   );
 
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const messages = contact ? (text.messagesByPeer[contact.peerId] ?? []) : [];
+  const messages = contact ? (textChat.messagesByPeer[contact.peerId] ?? []) : [];
   const callBusy = voice.isBusy || video.isBusy;
   const transport =
     contact &&
-    text.isChannelOpen({ contact }) &&
+    textChat.isChannelOpen({ contact }) &&
     overlayPeers > 0
       ? ("direct" as const)
       : ("network" as const);
@@ -100,13 +108,21 @@ export function ChatThread({ id }: ChatThreadProps) {
     if (!contact) {
       return;
     }
-    const current = contact;
-    async function openThread() {
-      await text.load.mutateAsync({ contact: current });
-      await text.markAsRead.mutateAsync({ contact: current });
-      await queryClient.invalidateQueries({ queryKey: contactKeys.all });
-    }
-    openThread();
+    loadTextChatMutation.mutate(
+      { contact },
+      {
+        onSuccess: () => {
+          markTextChatAsReadMutation.mutate(
+            { contact },
+            {
+              onSuccess: () => {
+                queryClient.invalidateQueries({ queryKey: contactKeys.all });
+              },
+            },
+          );
+        },
+      },
+    );
   }, [contact?.peerId]);
 
   useEffect(() => {
@@ -117,29 +133,39 @@ export function ChatThread({ id }: ChatThreadProps) {
     return null;
   }
 
-  const handleSend = async () => {
+  function handleSend() {
+    if (!contact) {
+      return;
+    }
     const body = draft.trim();
     if (!body) {
       return;
     }
-    await text.send.mutateAsync({ contact, body });
-    setDraft("");
-    await queryClient.invalidateQueries({ queryKey: contactKeys.all });
-  };
+    sendTextChatMutation.mutate(
+      { contact, body },
+      {
+        onSuccess: () => {
+          setDraft("");
+          queryClient.invalidateQueries({ queryKey: contactKeys.all });
+        },
+      },
+    );
+  }
 
-  const handleRemoveContact = async () => {
-    if (callBusy) {
-      if (video.active) {
-        await video.end();
-      } else {
-        await voice.end();
-      }
+  function handleRemoveContact() {
+    if (!contact) {
+      return;
     }
-    closeTextTransport(contact.peerId);
-    await removeContact.mutateAsync({ peerId: contact.peerId });
-    await queryClient.invalidateQueries({ queryKey: contactKeys.all });
-    navigate({ search: {} });
-  };
+    removeContactMutation.mutate(
+      { contact },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: contactKeys.all });
+          navigate({ search: {} });
+        },
+      },
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -239,15 +265,15 @@ export function ChatThread({ id }: ChatThreadProps) {
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={removeContact.isPending}>
+              <AlertDialogCancel disabled={removeContactMutation.isPending}>
                 Cancel
               </AlertDialogCancel>
               <AlertDialogAction
                 className="bg-destructive text-white hover:bg-destructive/90"
-                disabled={removeContact.isPending}
+                disabled={removeContactMutation.isPending}
                 onClick={handleRemoveContact}
               >
-                {removeContact.isPending ? <Spinner /> : "Delete"}
+                {removeContactMutation.isPending ? <Spinner /> : "Delete"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -295,7 +321,7 @@ export function ChatThread({ id }: ChatThreadProps) {
                   )}
                 >
                   <span className="min-w-0 flex-1">{message.body}</span>
-                  {message.outgoing ? (
+                  {message.outgoing && (
                     <span
                       className={cn(
                         "shrink-0 opacity-70",
@@ -324,7 +350,7 @@ export function ChatThread({ id }: ChatThreadProps) {
                         <CheckIcon className="size-3" />
                       )}
                     </span>
-                  ) : null}
+                  )}
                 </div>
               </div>
             ),
@@ -351,10 +377,10 @@ export function ChatThread({ id }: ChatThreadProps) {
           <InputGroupAddon align="block-end">
             <InputGroupButton
               variant="default"
-              disabled={text.send.isPending || !draft.trim()}
+              disabled={sendTextChatMutation.isPending || !draft.trim()}
               onClick={handleSend}
             >
-              {text.send.isPending ? (
+              {sendTextChatMutation.isPending ? (
                 <Spinner />
               ) : (
                 <SendIcon data-icon="inline-start" />

@@ -42,7 +42,7 @@ export function CallControls({
           <MicIcon className="size-5" />
         )}
       </Button>
-      {media === "video" ? (
+      {media === "video" && (
         <Button
           variant="secondary"
           size="icon"
@@ -56,7 +56,7 @@ export function CallControls({
             <VideoIcon className="size-5" />
           )}
         </Button>
-      ) : null}
+      )}
       <Button
         variant="destructive"
         size="icon"

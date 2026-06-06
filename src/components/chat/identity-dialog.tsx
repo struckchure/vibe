@@ -148,9 +148,9 @@ export function IdentityDialog({
           <Field>
             <FieldLabel>Invite</FieldLabel>
             <div className="flex justify-center rounded-md bg-white p-3">
-              {inviteUri ? (
+              {inviteUri && (
                 <QRCode value={inviteUri} size={160} level="M" />
-              ) : null}
+              )}
             </div>
             <div className="flex gap-2">
               <Input
@@ -224,7 +224,7 @@ export function IdentityDialog({
               )}
               {showPrivate ? "Hide recovery key" : "Show recovery key"}
             </Button>
-            {showPrivate && privateKey ? (
+            {showPrivate && privateKey && (
               <div className="flex gap-2">
                 <Input
                   readOnly
@@ -239,7 +239,7 @@ export function IdentityDialog({
                   <CopyIcon data-icon="inline-start" />
                 </Button>
               </div>
-            ) : null}
+            )}
           </Field>
 
           <Separator />
