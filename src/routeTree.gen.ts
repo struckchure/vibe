@@ -9,50 +9,50 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as ChatIndexRouteImport } from './routes/_chat/index'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
+const ChatIndexRoute = ChatIndexRouteImport.update({
+  id: '/_chat/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof ChatIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/': typeof ChatIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_chat/': typeof ChatIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths: '/'
   fileRoutesByTo: FileRoutesByTo
   to: '/'
-  id: '__root__' | '/'
+  id: '__root__' | '/_chat/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  ChatIndexRoute: typeof ChatIndexRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/_chat/': {
+      id: '/_chat/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+      preLoaderRoute: typeof ChatIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  ChatIndexRoute: ChatIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

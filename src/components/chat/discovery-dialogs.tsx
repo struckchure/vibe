@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UserPlusIcon } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,9 @@ import {
 } from "@/components/ui/item";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
+import { useAddContact } from "@/hooks/contacts";
 import { parsePeerId } from "@/lib/peer-id";
+import { contactKeys } from "@/lib/query-keys";
 import * as api from "@/lib/tauri";
 
 type DiscoveryDialogsProps = {
@@ -34,7 +37,6 @@ type DiscoveryDialogsProps = {
   onAddContactOpenChange: (open: boolean) => void;
   joinRoomOpen: boolean;
   onJoinRoomOpenChange: (open: boolean) => void;
-  onContactAdded: () => void;
   contactPeerIds: ReadonlySet<string>;
 };
 
@@ -43,9 +45,11 @@ export function DiscoveryDialogs({
   onAddContactOpenChange,
   joinRoomOpen,
   onJoinRoomOpenChange,
-  onContactAdded,
   contactPeerIds,
 }: DiscoveryDialogsProps) {
+  const queryClient = useQueryClient();
+  const addContact = useAddContact();
+
   const [peerIdInput, setPeerIdInput] = useState("");
   const [displayNameInput, setDisplayNameInput] = useState("");
   const [roomCode, setRoomCode] = useState("");
@@ -104,30 +108,28 @@ export function DiscoveryDialogs({
     };
   }, [joinRoomOpen]);
 
-  const handleAddContact = useCallback(async () => {
+  function handleAddContact() {
     const peerId = parsePeerId(peerIdInput);
-    const name =
+    const displayName =
       displayNameInput.trim() ||
       (peerId ? `Contact ${peerId.slice(0, 8)}` : "");
     if (!peerId) return;
-    try {
-      await api.addContact(peerId, name);
-      toast.success("Contact added");
-      setPeerIdInput("");
-      setDisplayNameInput("");
-      onAddContactOpenChange(false);
-      onContactAdded();
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }, [
-    peerIdInput,
-    displayNameInput,
-    onAddContactOpenChange,
-    onContactAdded,
-  ]);
 
-  const handleJoinRoom = useCallback(async () => {
+    addContact.mutate(
+      { peerId, displayName },
+      {
+        onSuccess: () => {
+          toast.success("Contact added");
+          setPeerIdInput("");
+          setDisplayNameInput("");
+          onAddContactOpenChange(false);
+          queryClient.invalidateQueries({ queryKey: contactKeys.all });
+        },
+      },
+    );
+  }
+
+  async function handleJoinRoom() {
     const code = roomCode.trim();
     const name = roomDisplayName.trim();
     if (!code || !name || joining) return;
@@ -142,7 +144,9 @@ export function DiscoveryDialogs({
       await api.startNetwork();
       await api.joinRoom(code, name);
       setInRoom(true);
-      setRoomActivity([{ kind: "join", peerId: "", displayName: name, at: Date.now() }]);
+      setRoomActivity([
+        { kind: "join", peerId: "", displayName: name, at: Date.now() },
+      ]);
       setRoomPeers(await api.listRoomPeers());
       toast.success(`In room ${code} as ${name}`);
     } catch (e) {
@@ -150,9 +154,9 @@ export function DiscoveryDialogs({
     } finally {
       setJoining(false);
     }
-  }, [roomCode, roomDisplayName, joining]);
+  }
 
-  const handleLeaveRoom = useCallback(async () => {
+  async function handleLeaveRoom() {
     await api.leaveRoom();
     setInRoom(false);
     setRoomPeers([]);
@@ -160,21 +164,21 @@ export function DiscoveryDialogs({
     setRoomCode("");
     setRoomDisplayName("");
     onJoinRoomOpenChange(false);
-  }, [onJoinRoomOpenChange]);
+  }
 
-  const handleAddFromRoom = useCallback(
-    async (peer: api.RoomPeer) => {
-      if (contactPeerIds.has(peer.peerId)) return;
-      try {
-        await api.addContact(peer.peerId, peer.displayName);
-        toast.success(`Added ${peer.displayName}`);
-        onContactAdded();
-      } catch (e) {
-        toast.error(String(e));
-      }
-    },
-    [contactPeerIds, onContactAdded],
-  );
+  function handleAddFromRoom(peer: api.RoomPeer) {
+    if (contactPeerIds.has(peer.peerId)) return;
+
+    addContact.mutate(
+      { peerId: peer.peerId, displayName: peer.displayName },
+      {
+        onSuccess: () => {
+          toast.success(`Added ${peer.displayName}`);
+          queryClient.invalidateQueries({ queryKey: contactKeys.all });
+        },
+      },
+    );
+  }
 
   return (
     <>
@@ -209,7 +213,9 @@ export function DiscoveryDialogs({
             </Field>
           </FieldGroup>
           <DialogFooter>
-            <Button onClick={() => void handleAddContact()}>Add</Button>
+            <Button disabled={addContact.isPending} onClick={handleAddContact}>
+              {addContact.isPending ? <Spinner /> : "Add"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -240,7 +246,7 @@ export function DiscoveryDialogs({
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      void handleJoinRoom();
+                      handleJoinRoom();
                     }
                   }}
                 />
@@ -298,8 +304,8 @@ export function DiscoveryDialogs({
                           <Button
                             variant="outline"
                             size="xs"
-                            disabled={added}
-                            onClick={() => void handleAddFromRoom(peer)}
+                            disabled={added || addContact.isPending}
+                            onClick={() => handleAddFromRoom(peer)}
                           >
                             <UserPlusIcon data-icon="inline-start" />
                             {added ? "Added" : "Add"}
@@ -318,12 +324,12 @@ export function DiscoveryDialogs({
                 disabled={
                   joining || !roomCode.trim() || !roomDisplayName.trim()
                 }
-                onClick={() => void handleJoinRoom()}
+                onClick={handleJoinRoom}
               >
                 {joining ? <Spinner /> : "Join"}
               </Button>
             ) : (
-              <Button variant="outline" onClick={() => void handleLeaveRoom()}>
+              <Button variant="outline" onClick={handleLeaveRoom}>
                 Leave room
               </Button>
             )}

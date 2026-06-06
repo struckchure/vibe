@@ -90,12 +90,12 @@ vibe/
 ├── src/                    # React UI, hooks, WebRTC logic
 │   ├── routes/             # TanStack Router pages
 │   ├── components/         # Chat, call, shadcn/ui
-│   ├── hooks/              # useConversations, useCall, …
+│   ├── hooks/              # useTextChat, useVoiceChat, contact queries, …
 │   ├── lib/
 │   │   ├── tauri.ts        # Typed IPC wrapper (invoke + listen)
-│   │   ├── webrtc.ts       # Peer connections, text DC, signaling
+│   │   ├── webrtc.ts       # Barrel re-exporting src/lib/transport/*
+│   │   ├── transport/      # WebRTC PCs, signaling, wire format (see README)
 │   │   └── calls.ts        # Voice/video call state machine
-│   └── contexts/           # ConversationsProvider, CallProvider
 │
 └── src-tauri/src/          # Rust application core
     ├── lib.rs              # AppState, Tauri commands, wiring
@@ -172,18 +172,23 @@ Local persistence (not IPFS):
 
 Thin typed wrappers around every `#[tauri::command]` and event listener. This is the only module that should call `@tauri-apps/api` directly for app logic.
 
-### Conversations (`hooks/use-conversations.ts`)
+### Conversations and chat hooks
 
-- Loads contacts and starts the overlay on mount.
-- Subscribes to `message-received`, `message-ack`, `message-read`, `conversation-read`, `message-updated`, `outbox-flushed`.
-- **`sendMessage`** delegates to `sendTextMessage` in `webrtc.ts` (hybrid transport).
+- **`useListContacts`** — React Query cache for contacts/inbox preview (`contactKeys.all`).
+- **`useTextChat`** — app-wide text messaging; `messagesByPeer` store + `send`/`load`/`markAsRead` mutations.
+- **`useVoiceChat` / `useVideoChat`** — call session hooks over `calls.ts`; media-filtered incoming/active state.
+- Components invalidate `contactKeys.all` locally after add/remove — no central refresh helper.
 
-### WebRTC (`lib/webrtc.ts`)
+Text send delegates to `sendTextMessage` in `webrtc.ts` (hybrid transport).
 
-Owns in-memory maps of **`RTCPeerConnection`** per remote peer:
+### WebRTC (`lib/webrtc.ts`, `lib/transport/`)
+
+Implementation lives under [`src/lib/transport/`](src/lib/transport/README.md). The barrel (`webrtc.ts`) is the app import path.
 
 - **Text PC** — one connection per contact; data channel label `vibe/text`.
 - **Call PC** — separate connection for voice/video so call renegotiation does not block text.
+
+See [`src/lib/transport/README.md`](src/lib/transport/README.md) for module layout and data-flow diagrams.
 
 **Polite / impolite** negotiation: the peer with the lexicographically **higher** Peer ID is the offerer; the lower peer answers. This avoids offer glare when both sides connect at once.
 
@@ -200,7 +205,7 @@ Owns in-memory maps of **`RTCPeerConnection`** per remote peer:
 1. If data channel is **open** → Rust `prepareWireMessage` (encrypt + persist) → TS sends raw bytes on DC → `markOutgoingSent`. UI shows **Direct**.
 2. Else → Rust `send_message` publishes on gossipsub; UI shows **Network**. TS still tries `ensureTextTransport` in the background to upgrade the path.
 
-### Calls (`lib/calls.ts`, `hooks/use-call.ts`)
+### Calls (`lib/calls.ts`, `hooks/use-voice-chat.ts`)
 
 - Call signaling types: `call-invite`, `call-answer`, `call-decline`, `call-end` (with `callLeg` for glare handling).
 - Uses **`ensureCallPeerConnection`** (dedicated PC), `getUserMedia` for local A/V, `ontrack` for remote streams.
@@ -211,11 +216,11 @@ Owns in-memory maps of **`RTCPeerConnection`** per remote peer:
 
 ```
 __root.tsx
-  └── AppProviders
-        ├── ConversationsProvider  → useConversations
-        ├── CallProvider           → useCall
-        ├── ChatLayout             → list + thread + discovery dialogs
-        └── CallShell              → overlay + incoming dialog
+  └── QueryClientProvider (createQueryClient — global RQ error toasts)
+        └── AppProviders
+              ├── AppNetworkHooks  → useTextChat, network bootstrap
+              ├── routes/_chat/    → ChatList + ChatThread + discovery
+              └── CallShell        → overlay + incoming dialog
 ```
 
 Routes under `src/routes/` provide the tab shell (text chat is primary; voice/video tabs are placeholders for call history).

@@ -1,45 +1,52 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { useConversationsContext } from "@/contexts/conversations-context";
+import { useAddContact } from "@/hooks/contacts";
 import { parsePeerInviteUrl } from "@/lib/peer-id";
-import * as api from "@/lib/tauri";
+import { contactKeys } from "@/lib/query-keys";
 
 export function usePeerInviteDeepLink() {
-  const { refreshContacts } = useConversationsContext();
+  const addContact = useAddContact();
+  const queryClient = useQueryClient();
   const processed = useRef(new Set<string>());
 
-  const handleUrl = useCallback(
-    async (url: string) => {
+  useEffect(() => {
+    function handleUrl(url: string) {
       const peerId = parsePeerInviteUrl(url);
       if (!peerId || processed.current.has(peerId)) return;
       processed.current.add(peerId);
-      try {
-        await api.addContact(peerId, `Contact ${peerId.slice(0, 8)}`);
-        toast.success("Contact added from link");
-        await refreshContacts();
-      } catch (e) {
-        processed.current.delete(peerId);
-        toast.error(String(e));
-      }
-    },
-    [refreshContacts],
-  );
 
-  useEffect(() => {
-    void getCurrent().then((urls) => {
+      addContact.mutate(
+        {
+          peerId,
+          displayName: `Contact ${peerId.slice(0, 8)}`,
+        },
+        {
+          onSuccess: () => {
+            toast.success("Contact added from link");
+            queryClient.invalidateQueries({ queryKey: contactKeys.all });
+          },
+          onError: () => {
+            processed.current.delete(peerId);
+          },
+        },
+      );
+    }
+
+    getCurrent().then((urls) => {
       for (const url of urls ?? []) {
-        void handleUrl(url);
+        handleUrl(url);
       }
     });
     const pending = onOpenUrl((urls) => {
       for (const url of urls) {
-        void handleUrl(url);
+        handleUrl(url);
       }
     });
     return () => {
-      void pending.then((unlisten) => unlisten());
+      pending.then((unlisten) => unlisten());
     };
-  }, [handleUrl]);
+  }, [addContact, queryClient]);
 }
