@@ -23,50 +23,50 @@ export type IdentityInfo = {
 };
 
 export async function getIdentity(): Promise<IdentityInfo> {
-  return invoke<IdentityInfo>("get_identity");
+  return await invoke<IdentityInfo>("get_identity");
 }
 
 export async function revealPrivateKey(): Promise<string> {
-  return invoke<string>("reveal_private_key");
+  return await invoke<string>("reveal_private_key");
 }
 
 export async function exportIdentityBackup(): Promise<string> {
-  return invoke<string>("export_identity_backup");
+  return await invoke<string>("export_identity_backup");
 }
 
 export async function exportIdentityBackupFile(): Promise<void> {
-  return invoke("export_identity_backup_file");
+  return await invoke("export_identity_backup_file");
 }
 
 export async function importIdentityFromPaste(json: string): Promise<void> {
-  return invoke("import_identity_backup", { json });
+  return await invoke("import_identity_backup", { json });
 }
 
 export async function importIdentityBackupFile(): Promise<void> {
-  return invoke("import_identity_backup_file");
+  return await invoke("import_identity_backup_file");
 }
 
 export async function regenerateIdentity(): Promise<void> {
-  return invoke("regenerate_identity");
+  return await invoke("regenerate_identity");
 }
 
 export async function getPeerId(): Promise<string> {
-  return invoke<string>("get_peer_id");
+  return await invoke<string>("get_peer_id");
 }
 
 export async function addContact(
   peerId: string,
-  displayName: string
+  displayName: string,
 ): Promise<Contact> {
-  return invoke<Contact>("add_contact", { peerId, displayName });
+  return await invoke<Contact>("add_contact", { peerId, displayName });
 }
 
 export async function listContacts(): Promise<Contact[]> {
-  return invoke<Contact[]>("list_contacts");
+  return await invoke<Contact[]>("list_contacts");
 }
 
 export async function removeContact(peerId: string): Promise<void> {
-  return invoke("remove_contact", { peerId });
+  return await invoke("remove_contact", { peerId });
 }
 
 export type RoomStatus = {
@@ -75,20 +75,20 @@ export type RoomStatus = {
 };
 
 export async function roomStatus(): Promise<RoomStatus> {
-  return invoke<RoomStatus>("room_status");
+  return await invoke<RoomStatus>("room_status");
 }
 
 export async function joinRoom(
   code: string,
-  displayName: string
+  displayName: string,
 ): Promise<void> {
-  return invoke("join_room", { code, displayName });
+  return await invoke("join_room", { code, displayName });
 }
 
 export async function subscribeConversation(
-  conversationId: string
+  conversationId: string,
 ): Promise<void> {
-  return invoke("subscribe_conversation", { conversationId });
+  return await invoke("subscribe_conversation", { conversationId });
 }
 
 export type RoomEvent = {
@@ -99,47 +99,47 @@ export type RoomEvent = {
 };
 
 export async function leaveRoom(): Promise<void> {
-  return invoke("leave_room");
+  return await invoke("leave_room");
 }
 
 export async function listRoomPeers(): Promise<RoomPeer[]> {
-  return invoke<RoomPeer[]>("list_room_peers");
+  return await invoke<RoomPeer[]>("list_room_peers");
 }
 
 export async function startNetwork(): Promise<void> {
-  return invoke("start_network");
+  return await invoke("start_network");
 }
 
 export async function overlayPeerCount(): Promise<number> {
-  return invoke<number>("overlay_peer_count");
+  return await invoke<number>("overlay_peer_count");
 }
 
 export function onOverlayPeersChanged(
-  handler: (count: number) => void
+  handler: (count: number) => void,
 ): Promise<() => void> {
   return listen<number>("overlay-peers-changed", (e) => handler(e.payload));
 }
 
 export async function sendMessage(
   peerId: string,
-  body: string
+  body: string,
 ): Promise<Message> {
-  return invoke<Message>("send_message", { peerId, body });
+  return await invoke<Message>("send_message", { peerId, body });
 }
 
 export async function flushOutbox(): Promise<number> {
-  return invoke<number>("flush_outbox");
+  return await invoke<number>("flush_outbox");
 }
 
 export async function markOutgoingSent(
   peerId: string,
-  messageId: string
+  messageId: string,
 ): Promise<void> {
-  return invoke("mark_outgoing_sent", { peerId, messageId });
+  return await invoke("mark_outgoing_sent", { peerId, messageId });
 }
 
 export async function listMessages(peerId: string): Promise<Message[]> {
-  return invoke<Message[]>("list_messages", { peerId });
+  return await invoke<Message[]>("list_messages", { peerId });
 }
 
 export async function recordCallHistory(args: {
@@ -150,7 +150,7 @@ export async function recordCallHistory(args: {
   outcome: "completed" | "missed" | "declined" | "cancelled";
   durationMs?: number | null;
 }): Promise<Message> {
-  return invoke<Message>("record_call_history", {
+  return await invoke<Message>("record_call_history", {
     peerId: args.peerId,
     conversationId: args.conversationId,
     outgoing: args.outgoing,
@@ -161,15 +161,15 @@ export async function recordCallHistory(args: {
 }
 
 export async function markConversationRead(peerId: string): Promise<void> {
-  return invoke("mark_conversation_read", { peerId });
+  return await invoke("mark_conversation_read", { peerId });
 }
 
 export async function publishSignaling(
   conversationId: string,
   payload: string,
-  waitForDelivery = true
+  waitForDelivery = true,
 ): Promise<void> {
-  return invoke("publish_signaling", {
+  return await invoke("publish_signaling", {
     conversationId,
     payload,
     waitForDelivery,
@@ -178,18 +178,18 @@ export async function publishSignaling(
 
 export async function prepareWireMessage(
   peerId: string,
-  body: string
+  body: string,
 ): Promise<{ wireBase64: string; sentAt: number; messageId: string }> {
-  return invoke("prepare_wire_message", { peerId, body });
+  return await invoke("prepare_wire_message", { peerId, body });
 }
 
 export async function persistOutgoingMessage(
   peerId: string,
   body: string,
   sentAt: number,
-  messageId: string
+  messageId: string,
 ): Promise<Message> {
-  return invoke<Message>("persist_outgoing_message", {
+  return await invoke<Message>("persist_outgoing_message", {
     peerId,
     body,
     sentAt,
@@ -199,37 +199,39 @@ export async function persistOutgoingMessage(
 
 export async function encryptSignaling(
   peerId: string,
-  payload: string
+  payload: string,
 ): Promise<string> {
-  return invoke<string>("encrypt_signaling", { peerId, payload });
+  return await invoke<string>("encrypt_signaling", { peerId, payload });
 }
 
 export async function decryptSignaling(
   peerId: string,
-  payload: string
+  payload: string,
 ): Promise<string> {
-  return invoke<string>("decrypt_signaling", { peerId, payload });
+  return await invoke<string>("decrypt_signaling", { peerId, payload });
 }
 
 export async function ingestDcMessage(
   peerId: string,
-  wireBase64: string
+  wireBase64: string,
 ): Promise<void> {
-  return invoke("ingest_dc_message", { peerId, wireBase64 });
+  return await invoke("ingest_dc_message", { peerId, wireBase64 });
 }
 
 export function onMessageReceived(
-  handler: (msg: Message) => void
+  handler: (msg: Message) => void,
 ): Promise<() => void> {
   return listen<Message>("message-received", (e) => handler(e.payload));
 }
 
-export function onRoomPeer(handler: (peer: RoomPeer) => void): Promise<() => void> {
+export function onRoomPeer(
+  handler: (peer: RoomPeer) => void,
+): Promise<() => void> {
   return listen<RoomPeer>("room-peer", (e) => handler(e.payload));
 }
 
 export function onRoomEvent(
-  handler: (event: RoomEvent) => void
+  handler: (event: RoomEvent) => void,
 ): Promise<() => void> {
   return listen<RoomEvent>("room-event", (e) => handler(e.payload));
 }
@@ -242,7 +244,7 @@ export type MessageAckPayload = {
 };
 
 export function onMessageAck(
-  handler: (payload: MessageAckPayload) => void
+  handler: (payload: MessageAckPayload) => void,
 ): Promise<() => void> {
   return listen<MessageAckPayload>("message-ack", (e) => handler(e.payload));
 }
@@ -255,7 +257,7 @@ export type MessageReadPayload = {
 };
 
 export function onMessageRead(
-  handler: (payload: MessageReadPayload) => void
+  handler: (payload: MessageReadPayload) => void,
 ): Promise<() => void> {
   return listen<MessageReadPayload>("message-read", (e) => handler(e.payload));
 }
@@ -266,10 +268,10 @@ export type ConversationReadPayload = {
 };
 
 export function onConversationRead(
-  handler: (payload: ConversationReadPayload) => void
+  handler: (payload: ConversationReadPayload) => void,
 ): Promise<() => void> {
   return listen<ConversationReadPayload>("conversation-read", (e) =>
-    handler(e.payload)
+    handler(e.payload),
   );
 }
 
@@ -280,15 +282,15 @@ export type MessageUpdatedPayload = {
 };
 
 export function onMessageUpdated(
-  handler: (payload: MessageUpdatedPayload) => void
+  handler: (payload: MessageUpdatedPayload) => void,
 ): Promise<() => void> {
   return listen<MessageUpdatedPayload>("message-updated", (e) =>
-    handler(e.payload)
+    handler(e.payload),
   );
 }
 
 export function onOutboxFlushed(
-  handler: (count: number) => void
+  handler: (count: number) => void,
 ): Promise<() => void> {
   return listen<number>("outbox-flushed", (e) => handler(e.payload));
 }
@@ -299,11 +301,14 @@ export function onIdentityChanged(handler: () => void): Promise<() => void> {
 
 export function onSignaling(
   conversationId: string,
-  handler: (payload: string) => void
+  handler: (payload: string) => void,
 ): Promise<() => void> {
-  return listen<{ conversationId: string; payload: string }>("signaling", (e) => {
-    if (e.payload.conversationId === conversationId) {
-      handler(e.payload.payload);
-    }
-  });
+  return listen<{ conversationId: string; payload: string }>(
+    "signaling",
+    (e) => {
+      if (e.payload.conversationId === conversationId) {
+        handler(e.payload.payload);
+      }
+    },
+  );
 }
