@@ -95,12 +95,12 @@ export function ChatThread({ id }: ChatThreadProps) {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const messages = contact ? (textChat.messagesByPeer[contact.peerId] ?? []) : [];
+  const messages = contact
+    ? (textChat.messagesByPeer[contact.peerId] ?? [])
+    : [];
   const callBusy = voice.isBusy || video.isBusy;
   const transport =
-    contact &&
-    textChat.isChannelOpen({ contact }) &&
-    overlayPeers > 0
+    contact && textChat.isChannelOpen({ contact }) && overlayPeers > 0
       ? ("direct" as const)
       : ("network" as const);
 
@@ -128,10 +128,6 @@ export function ChatThread({ id }: ChatThreadProps) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
-  if (!contact) {
-    return null;
-  }
 
   function handleSend() {
     if (!contact) {
@@ -165,6 +161,10 @@ export function ChatThread({ id }: ChatThreadProps) {
         },
       },
     );
+  }
+
+  if (!contact) {
+    return null;
   }
 
   return (
@@ -260,8 +260,8 @@ export function ChatThread({ id }: ChatThreadProps) {
             <AlertDialogHeader>
               <AlertDialogTitle>Delete contact?</AlertDialogTitle>
               <AlertDialogDescription>
-                {contact.displayName} will be removed from your contacts and this
-                chat history will be cleared from this device.
+                {contact.displayName} will be removed from your contacts and
+                this chat history will be cleared from this device.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
