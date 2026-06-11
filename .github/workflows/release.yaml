@@ -58,6 +58,19 @@ jobs:
         if: matrix.mobile == 'android'
         uses: android-actions/setup-android@v3
 
+      - name: create Android debug keystore (CI)
+        if: matrix.mobile == 'android'
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: install dependencies (ubuntu desktop)
         if: matrix.platform == 'ubuntu-22.04' && matrix.mobile != 'android'
         run: |
@@ -95,7 +108,7 @@ jobs:
           releaseBody: |
             Desktop installers and mobile builds for this version.
 
-            - **Android**: universal APK (`--apk`). For Play Store distribution, sign with your release keystore (optional repo secrets below).
+            - **Android**: universal APK (`--apk`), signed in CI with the standard Android debug keystore for sideloading (`adb install`). For Play Store distribution, add `keystore.properties` and an upload keystore (see [Tauri Android signing](https://v2.tauri.app/distribute/sign/android/)).
             - **iOS**: IPA built with `--no-sign` for CI; install via Xcode, AltStore, or re-sign with your Apple Developer account.
           releaseDraft: false
           prerelease: false

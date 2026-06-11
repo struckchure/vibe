@@ -9,5 +9,7 @@ Numbered phases (`NNNN.md`) track incremental delivery. Each plan links to [SPEC
 | [0003.md](./0003.md) | done | WebRTC text: `vibe/text` data channel, encrypted signaling, gossipsub fallback |
 | [0004.md](./0004.md) | done | Chat delivery: mDNS, announce v2 dial, topic subscribe, STUN, overlay UX |
 | [0005.md](./0005.md) | done | Voice/video 1:1 calls from chat thread header |
+| [0006.md](./0006.md) | in_progress | SPEC-aligned realtime: catalog ICE, single PC, Noise XX |
+| [0007.md](./0007.md) | done | Auto-connect on chat open via gossipsub (connected libp2p peers only) |
 
 **Status values:** `planned` | `in_progress` | `done`

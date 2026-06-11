@@ -12,6 +12,7 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "os:default",
-    "deep-link:default"
+    "deep-link:default",
+    "clipboard-manager:default"
   ]
 }

@@ -12,7 +12,9 @@
     "dev:ios": "tauri ios dev",
     "dev:android": "tauri android dev",
     "release:macos": "tauri build --target aarch64-apple-darwin --bundles dmg",
-    "release:ios": "tauri ios build --target aarch64 --no-sign"
+    "release:ios": "tauri ios build --target aarch64 --no-sign",
+    "release:android": "tauri android build --target aarch64 --apk --ci",
+    "release:android:device": "tauri android run --release --ci"
   },
   "dependencies": {
     "@fontsource-variable/space-grotesk": "^5.2.10",
@@ -21,6 +23,7 @@
     "@tanstack/react-router": "^1.170.11",
     "@tanstack/react-store": "^0.11.0",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-dialog": "~2",
     "@tauri-apps/plugin-opener": "^2",

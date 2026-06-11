@@ -6,15 +6,15 @@ The protocol and security model are defined in [SPEC.md](./SPEC.md) (draft `0.1.
 
 ## What works today
 
-The first milestone (**M0**) is largely in place: encrypted 1:1 text between peers on a local overlay, with a WhatsApp-style chat UI.
+The first milestone (**M0**) is largely in place: encrypted 1:1 text and calls over WebRTC, with a WhatsApp-style chat UI.
 
 | Area | Status |
 |------|--------|
 | Tab shell (Text / Voice / Video) | Text + in-thread voice/video calls; tabs still placeholders for call history |
-| Chat UI | Resizable sidebar + thread, contacts, room discovery |
+| Chat UI | Resizable sidebar + thread, contacts, manual Connect (SDP exchange) |
 | Identity | Ed25519 keypair; peer ID = public key; QR invite; JSON backup import/export |
-| Overlay | libp2p gossipsub, mDNS LAN discovery, room codes, Noise session keys |
-| Messaging | Encrypted gossipsub + WebRTC `vibe/text` data channel with fallback |
+| Rust core | Storage, identity, Noise XX + wire crypto, minimal libp2p gossipsub overlay |
+| Messaging | WebRTC data channels (`vibe/text`) with STUN/TURN; pending queue when offline |
 
 Incremental delivery is tracked in [plans/](./plans/). Plans [0001](./plans/0001.md) through [0004](./plans/0004.md) are **done** (text, identity, WebRTC transport, and reliable delivery across desktop ↔ mobile on the same LAN).
 
@@ -24,7 +24,7 @@ High-level phases from [SPEC.md §16](./SPEC.md#16-phased-delivery-roadmap):
 
 | Phase | Focus | Exit criteria (summary) |
 |-------|--------|-------------------------|
-| **M0** | Shell, identity, libp2p, 1:1 encrypted text | Two clients exchange text with no central server — *mostly complete* |
+| **M0** | Shell, identity, WebRTC, 1:1 encrypted text | Two clients exchange text with no central server — *mostly complete* |
 | **M1** | 1:1 voice/video; IPFS profiles and attachments | Voice call; profile and file round-trip via CID |
 | **M2** | Group text; Sender Keys; Strict/Pragmatic network settings | 5-member group chat; settings affect STUN behavior |
 | **M3** | Optional encrypted history on IPFS; Double Ratchet; multi-device | Offline delivery after reconnect; second device sync |
@@ -46,8 +46,8 @@ Details and rationale are in [SPEC.md §2](./SPEC.md#2-goals-and-non-goals).
 |-------|---------|
 | Shell | [Tauri v2](https://v2.tauri.app/) (Rust) |
 | UI | React 19, [TanStack Router](https://tanstack.com/router), [shadcn/ui](https://ui.shadcn.com/), Tailwind CSS 4 |
-| P2P | libp2p (gossipsub, Noise, mDNS) |
-| Realtime | WebRTC data channels (+ STUN for NAT) |
+| Rust core | Identity, encrypted storage, Noise XX + wire crypto |
+| Realtime | WebRTC (STUN/TURN ICE, data channels for signaling + chat) |
 | Persistence (planned) | IPFS content-addressed blobs |
 
 ## Project layout
@@ -119,19 +119,42 @@ Unsigned IPA for CI/sideloading:
 bun run release:ios
 ```
 
-### Cross-network overlay
+### Android release on a physical device (Samsung / Android 15)
 
-Room discovery and QR-added contacts use the libp2p overlay (Kademlia DHT providers, rendezvous, circuit relay). Bootstrap/relay/rendezvous peers are configured in [`src-tauri/src/bootstrap.rs`](src-tauri/src/bootstrap.rs). Both peers must be online; DHT propagation can take up to ~30 seconds.
+Prerequisites: [Tauri Android prerequisites](https://v2.tauri.app/start/prerequisites/#android) (Android SDK, NDK, `rustup target add aarch64-linux-android`). On the phone: **Developer options → USB debugging** enabled, then connect via USB and accept the debug prompt.
+
+Release APK for arm64 Samsung phones (output under `src-tauri/gen/android/app/build/outputs/apk/`):
+
+```bash
+bun run release:android
+```
+
+Build and install on the connected device:
+
+```bash
+bun run release:android:device
+```
+
+To install a built APK manually (release builds are signed with the Android debug keystore unless `src-tauri/gen/android/keystore.properties` is configured — see [Tauri Android signing](https://v2.tauri.app/distribute/sign/android/)):
+
+```bash
+adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+```
+
+If you only have an unsigned artifact from an older build, sign it once with `apksigner` and the debug keystore, then install.
+
+### Cross-network connectivity
+
+WebRTC uses the Metered STUN/TURN catalog in [`src/lib/ice-config.ts`](src/lib/ice-config.ts). Peers add each other via QR or `vibe://peer/…` deep links. **Primary connect:** open a mutual contact's chat — when you are **connected libp2p peers**, SDP is exchanged over gossipsub on `vibe/signal/<conversation_id>` and WebRTC connects automatically. **Fallback:** Advanced → manual `vibe://connect` link in the chat menu.
 
 **Manual test checklist:**
 
 | Scenario | Steps | Expected |
 |----------|-------|----------|
-| Room cross-network | Device A on cellular, B on Wi-Fi, same room code | Both see each other; offline banner clears |
-| QR / deep link | A shows QR, B opens `vibe://peer/…` (no room) | Contact added; messages deliver both ways |
-| Same LAN | Two devices on same Wi-Fi | Peers appear quickly via mDNS |
-
-For production, replace bootstrap entries with community-operated relay and rendezvous nodes (SPEC §9.1).
+| QR / deep link | A shows QR, B opens `vibe://peer/…` | Contact added on B |
+| Overlay + auto-connect | Both devices are connected libp2p peers → open chat | Data channel opens without manual links |
+| Manual connect fallback | Overlay unavailable → Advanced → connect links | Data channel opens |
+| Voice call | After connected, tap call on either side | Call via `vibe/signal` DC |
 
 **Recommended IDE:** VS Code with [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) and [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
 

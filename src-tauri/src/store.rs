@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -79,6 +79,9 @@ pub struct EphemeralStore {
     contacts: HashMap<String, ContactRow>,
     messages: HashMap<String, Vec<MessageRow>>,
     session_keys: HashMap<String, [u8; 32]>,
+    noise_ready: HashSet<String>,
+    outgoing_seq: HashMap<String, u64>,
+    incoming_seq: HashMap<String, u64>,
 }
 
 impl EphemeralStore {
@@ -110,6 +113,9 @@ impl EphemeralStore {
             contacts,
             messages,
             session_keys: HashMap::new(),
+            noise_ready: HashSet::new(),
+            outgoing_seq: HashMap::new(),
+            incoming_seq: HashMap::new(),
         })
     }
 
@@ -400,6 +406,36 @@ impl EphemeralStore {
 
     pub fn remove_session_key(&mut self, peer_id: &str) {
         self.session_keys.remove(peer_id);
+    }
+
+    pub fn is_noise_ready(&self, peer_id: &str) -> bool {
+        self.noise_ready.contains(peer_id)
+    }
+
+    pub fn set_noise_ready(&mut self, peer_id: &str, ready: bool) {
+        if ready {
+            self.noise_ready.insert(peer_id.to_string());
+        } else {
+            self.noise_ready.remove(peer_id);
+        }
+    }
+
+    pub fn next_outgoing_seq(&mut self, conversation_id: &str) -> u64 {
+        let entry = self.outgoing_seq.entry(conversation_id.to_string()).or_insert(0);
+        *entry += 1;
+        *entry
+    }
+
+    pub fn accept_incoming_seq(&mut self, conversation_id: &str, seq: u64) -> bool {
+        let last = self
+            .incoming_seq
+            .entry(conversation_id.to_string())
+            .or_insert(0);
+        if seq <= *last {
+            return false;
+        }
+        *last = seq;
+        true
     }
 
     fn save_contacts(&self) -> Result<()> {

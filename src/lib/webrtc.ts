@@ -2,57 +2,63 @@ import "./transport/register";
 
 export type {
   CallSignalingMessage,
-  CallPeerState,
   SendTextResult,
   SignalingEnvelope,
   SignalingMessage,
   TextSignalingMessage,
-  TextPeerState,
 } from "./transport/types";
+export type { PeerConnectionState, SdpExchangePayload } from "./transport/peer-connection";
 export { isCallSignal } from "./transport/types";
 
 export {
   applyRemoteDescription,
   CALL_ICE_GATHER_TIMEOUT_MS,
-  CALL_ICE_SERVERS,
-  ICE_SERVERS,
+  NOISE_CHANNEL_LABEL,
   parseSessionDescription,
   sessionDescriptionPayload,
+  SIGNAL_CHANNEL_LABEL,
   TEXT_CHANNEL_LABEL,
   waitForIceGathering,
 } from "./transport/rtc-utils";
 
 export {
+  applyConnectionAnswer,
+  attachLocalCallTracks,
   clearOrphanedCallIce,
   closeCallPeerConnection,
+  closePeerConnection,
+  closeTextTransport,
+  createConnectionOffer,
   ensureCallPeerConnection,
+  ensurePeerConnection,
+  ensureTextTransport,
   flushOrphanedCallIce,
   flushPendingIce,
   flushPendingLocalIce,
+  flushPendingMessages,
   getCallPeerConnection,
+  getDataChannel,
+  getPeerConnection,
+  getTransportPeerIds,
+  isPeerConnected,
+  isTextChannelOpen,
+  isTransportReady,
+  recycleAllPeerConnections,
+  removeCallTracks,
+  sendTextMessage,
   setCallIceReady,
+  setTextTransportPaused,
   stopCallMediaTracks as stopMediaTracks,
+  subscribeTextChannelState,
+  subscribeTransportState,
   syncCallRemoteTracks,
-} from "./transport/call-peer";
+} from "./transport/peer-connection";
 
 export {
   ensureConversationSignaling,
+  isSignalingChannelOpen,
   publishSignalingMessage,
+  publishSignalingBestEffort,
   registerSignalingRoutes,
   setSignalingLocalPeerId,
-  teardownConversationSignaling,
 } from "./transport/signaling";
-
-export {
-  closePeerConnection,
-  closeTextTransport,
-  ensurePeerConnection,
-  ensureTextTransport,
-  getDataChannel,
-  getPeerConnection,
-  isTextChannelOpen,
-  resetTextTransport,
-  sendTextMessage,
-  setTextTransportPaused,
-  subscribeTextChannelState,
-} from "./transport/text-peer";

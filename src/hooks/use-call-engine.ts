@@ -4,26 +4,27 @@
 import { useEffect } from "react";
 
 import { useListContacts, useLocalPeerId } from "@/hooks/contacts";
-import * as api from "@/lib/tauri";
 import { setupCallSignaling } from "@/lib/calls";
+
+let engineSubscribers = 0;
 
 export function useCallEngine() {
   const listContactQuery = useListContacts();
   const localPeerIdQuery = useLocalPeerId();
 
   useEffect(() => {
-    async function setup() {
-      if (!localPeerIdQuery.data) {
-        return;
-      }
-      await api.startNetwork();
+    engineSubscribers += 1;
+    if (engineSubscribers === 1 && localPeerIdQuery.data) {
       const list = (listContactQuery.data ?? []).map((c) => ({
         peerId: c.peerId,
         displayName: c.displayName,
         conversationId: c.conversationId,
       }));
-      await setupCallSignaling(localPeerIdQuery.data, list);
+      void setupCallSignaling(localPeerIdQuery.data, list);
     }
-    void setup();
+
+    return () => {
+      engineSubscribers -= 1;
+    };
   }, [listContactQuery.data, localPeerIdQuery.data]);
 }

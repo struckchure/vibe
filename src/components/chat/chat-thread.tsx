@@ -3,6 +3,7 @@ import {
   CheckCheckIcon,
   CheckIcon,
   ClockIcon,
+  LinkIcon,
   MoreVerticalIcon,
   PhoneIcon,
   PhoneMissedIcon,
@@ -43,7 +44,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { useListContacts } from "@/hooks/contacts";
+import { useListContacts, useLocalPeerId } from "@/hooks/contacts";
 import {
   useTextChat,
   useTextChatLoad,
@@ -51,10 +52,12 @@ import {
   useTextChatRemoveContact,
   useTextChatSend,
 } from "@/hooks/text-chat";
-import { useOverlayPeers } from "@/hooks/use-overlay-peers";
+import { ConnectDialog } from "@/components/chat/connect-dialog";
+import { useAutoConnect } from "@/hooks/use-auto-connect";
 import { useVideoChat, useVoiceChat } from "@/hooks/use-voice-chat";
 import { isCallMessage } from "@/lib/call-history";
 import { contactKeys } from "@/lib/query-keys";
+import { isTextChannelOpen } from "@/lib/webrtc";
 import { cn } from "@/lib/utils";
 
 type ChatThreadProps = {
@@ -78,6 +81,7 @@ export function ChatThread({ id }: ChatThreadProps) {
   const queryClient = useQueryClient();
 
   const listContactQuery = useListContacts();
+  const localPeerIdQuery = useLocalPeerId();
   const textChat = useTextChat();
   const loadTextChatMutation = useTextChatLoad();
   const sendTextChatMutation = useTextChatSend();
@@ -85,24 +89,28 @@ export function ChatThread({ id }: ChatThreadProps) {
   const removeContactMutation = useTextChatRemoveContact();
   const voice = useVoiceChat();
   const video = useVideoChat();
-  const overlayPeers = useOverlayPeers();
 
   const contact = useMemo(
     () => listContactQuery.data?.find((c) => c.conversationId === id),
     [listContactQuery.data, id],
   );
-
   const [draft, setDraft] = useState("");
+  const [connectOpen, setConnectOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const messages = contact
     ? (textChat.messagesByPeer[contact.peerId] ?? [])
     : [];
   const callBusy = voice.isBusy || video.isBusy;
-  const transport =
-    contact && textChat.isChannelOpen({ contact }) && overlayPeers > 0
-      ? ("direct" as const)
-      : ("network" as const);
+  const autoConnectPhase = useAutoConnect(contact, localPeerIdQuery.data);
+  const channelOpen =
+    !!contact &&
+    (textChat.isChannelOpen({ contact }) || isTextChannelOpen(contact.peerId));
+  const transport = channelOpen
+    ? ("direct" as const)
+    : autoConnectPhase === "connecting"
+      ? ("connecting" as const)
+      : ("offline" as const);
 
   useEffect(() => {
     if (!contact) {
@@ -169,6 +177,23 @@ export function ChatThread({ id }: ChatThreadProps) {
 
   return (
     <div className="flex h-full flex-col">
+      {!channelOpen && autoConnectPhase === "waiting_overlay" && (
+        <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
+          Waiting for {contact.displayName} on the libp2p overlay — open this chat
+          on both devices once you are connected peers.
+        </p>
+      )}
+      {!channelOpen && autoConnectPhase === "connecting" && (
+        <p className="shrink-0 border-b bg-primary/10 px-4 py-2 text-center text-xs text-primary">
+          Connecting to {contact.displayName}…
+        </p>
+      )}
+      {!channelOpen && autoConnectPhase === "idle" && (
+        <p className="shrink-0 border-b bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-800 dark:text-amber-200">
+          Not connected — messages queue until the data channel is open. Use
+          Advanced → manual connect link if overlay connect does not work.
+        </p>
+      )}
       <header
         className={cn(
           "flex shrink-0 items-center gap-3 border-b px-4 py-1.5",
@@ -200,36 +225,32 @@ export function ChatThread({ id }: ChatThreadProps) {
             "shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
             transport === "direct"
               ? "bg-primary/10 text-primary"
-              : "bg-muted text-muted-foreground",
+              : transport === "connecting"
+                ? "bg-primary/10 text-primary"
+                : "bg-muted text-muted-foreground",
           )}
         >
-          {transport === "direct" ? "Direct" : "Network"}
+          {transport === "direct"
+            ? "Direct"
+            : transport === "connecting"
+              ? "Connecting"
+              : "Offline"}
         </span>
         <Button
           variant="ghost"
           size="icon-sm"
-          disabled={callBusy}
+          disabled={callBusy || !channelOpen}
           onClick={() => voice.start({ contact })}
           aria-label="Voice call"
-          title={
-            transport === "network"
-              ? "Voice call (via network signaling)"
-              : "Voice call"
-          }
         >
           <PhoneIcon data-icon="inline-start" />
         </Button>
         <Button
           variant="ghost"
           size="icon-sm"
-          disabled={callBusy}
+          disabled={callBusy || !channelOpen}
           onClick={() => video.start({ contact })}
           aria-label="Video call"
-          title={
-            transport === "network"
-              ? "Video call (via network signaling)"
-              : "Video call"
-          }
         >
           <VideoIcon data-icon="inline-start" />
         </Button>
@@ -245,6 +266,10 @@ export function ChatThread({ id }: ChatThreadProps) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setConnectOpen(true)}>
+                <LinkIcon data-icon="inline-start" />
+                Advanced: manual connect link
+              </DropdownMenuItem>
               <AlertDialogTrigger asChild>
                 <DropdownMenuItem
                   variant="destructive"
@@ -389,6 +414,15 @@ export function ChatThread({ id }: ChatThreadProps) {
           </InputGroupAddon>
         </InputGroup>
       </div>
+
+      {localPeerIdQuery.data && (
+        <ConnectDialog
+          open={connectOpen}
+          onOpenChange={setConnectOpen}
+          contact={contact}
+          localPeerId={localPeerIdQuery.data}
+        />
+      )}
     </div>
   );
 }

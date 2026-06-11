@@ -33,28 +33,6 @@ export function isCallSignal(
 }
 
 export type SendTextResult = {
-  via: "dc" | "gossipsub";
+  via: "dc" | "queued";
   message: Message;
-};
-
-export type TextPeerState = {
-  pc: RTCPeerConnection;
-  conversationId: string;
-  remotePeerId: string;
-  localPeerId: string;
-  polite: boolean;
-  makingOffer: boolean;
-  ignoreOffer: boolean;
-  channel: RTCDataChannel | null;
-};
-
-export type CallPeerState = {
-  pc: RTCPeerConnection;
-  conversationId: string;
-  remotePeerId: string;
-  localPeerId: string;
-  makingOffer: boolean;
-  callIceReady: boolean;
-  onRemoteTrack: ((stream: MediaStream) => void) | null;
-  remoteMediaStream: MediaStream | null;
 };

@@ -1,4 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
+import { startTransition } from "react";
 
 import * as api from "@/lib/tauri";
 
@@ -9,30 +10,30 @@ import type { UseTextChatLoadProps } from "./types";
 export function useTextChatLoad() {
   return useMutation({
     mutationFn: async ({ contact }: UseTextChatLoadProps) => {
-      await api.startNetwork();
-      await api.subscribeConversation(contact.conversationId);
       const msgs = await api.listMessages(contact.peerId);
-      updatePeerMessages(contact.peerId, (existing) => {
-        if (!existing.length) {
-          return msgs;
-        }
-        const localById = new Map(existing.map((m) => [m.id, m]));
-        let changed = existing.length !== msgs.length;
-        const merged = msgs.map((server) => {
-          const local = localById.get(server.id);
-          const next = mergeMessage(local, server);
-          if (
-            local &&
-            local.readAt === next.readAt &&
-            local.deliveredAt === next.deliveredAt &&
-            local.body === next.body
-          ) {
-            return local;
+      startTransition(() => {
+        updatePeerMessages(contact.peerId, (existing) => {
+          if (!existing.length) {
+            return msgs;
           }
-          changed = true;
-          return next;
+          const localById = new Map(existing.map((m) => [m.id, m]));
+          let changed = existing.length !== msgs.length;
+          const merged = msgs.map((server) => {
+            const local = localById.get(server.id);
+            const next = mergeMessage(local, server);
+            if (
+              local &&
+              local.readAt === next.readAt &&
+              local.deliveredAt === next.deliveredAt &&
+              local.body === next.body
+            ) {
+              return local;
+            }
+            changed = true;
+            return next;
+          });
+          return changed ? merged : existing;
         });
-        return changed ? merged : existing;
       });
     },
   });

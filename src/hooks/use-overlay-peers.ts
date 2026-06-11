@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import * as api from "@/lib/tauri";
 
@@ -23,19 +23,39 @@ function subscribe(listener: () => void) {
     })();
     void api.onOverlayPeersChanged((count) => {
       overlayPeerCount = count;
-      if (count > 0) {
-        void api.flushOutbox();
-      }
       notify();
     });
   }
   return () => listeners.delete(listener);
 }
 
-function getSnapshot() {
+function getCountSnapshot() {
   return overlayPeerCount;
 }
 
 export function useOverlayPeers(): number {
-  return useSyncExternalStore(subscribe, getSnapshot, () => 0);
+  return useSyncExternalStore(subscribe, getCountSnapshot, () => 0);
+}
+
+export function useContactOverlayConnected(peerId: string | undefined): boolean {
+  const overlayCount = useOverlayPeers();
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!peerId || overlayCount === 0) {
+      setConnected(false);
+      return;
+    }
+    let cancelled = false;
+    void api.isOverlayPeerConnected(peerId).then((next) => {
+      if (!cancelled) {
+        setConnected(next);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [peerId, overlayCount]);
+
+  return connected;
 }

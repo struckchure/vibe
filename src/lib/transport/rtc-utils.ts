@@ -1,27 +1,8 @@
 export const TEXT_CHANNEL_LABEL = "vibe/text";
+export const SIGNAL_CHANNEL_LABEL = "vibe/signal";
+export const NOISE_CHANNEL_LABEL = "vibe/noise";
 
-/** Dev/testing only — replace with user-configured TURN before production (SPEC §11.4). */
-const OPEN_RELAY_TURN: RTCIceServer = {
-  urls: [
-    "turn:openrelay.metered.ca:80",
-    "turn:openrelay.metered.ca:443",
-    "turn:openrelay.metered.ca:443?transport=tcp",
-  ],
-  username: "openrelayproject",
-  credential: "openrelayproject",
-};
-
-export const CALL_ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  OPEN_RELAY_TURN,
-];
-
-export const ICE_SERVERS: RTCIceServer[] = [
-  ...CALL_ICE_SERVERS,
-  { urls: "stun:stun1.l.google.com:19302" },
-];
-
-export const CALL_ICE_GATHER_TIMEOUT_MS = 4000;
+export const CALL_ICE_GATHER_TIMEOUT_MS = 10_000;
 
 export function isImpolite(localPeerId: string, remotePeerId: string): boolean {
   return localPeerId > remotePeerId;

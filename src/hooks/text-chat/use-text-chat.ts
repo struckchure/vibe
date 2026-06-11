@@ -4,7 +4,6 @@ import { useListContacts, useLocalPeerId } from "@/hooks/contacts";
 import type { ContactRef } from "@/types/contact";
 import * as api from "@/lib/tauri";
 import {
-  ensureTextTransport,
   isTextChannelOpen,
   subscribeTextChannelState,
 } from "@/lib/webrtc";
@@ -28,7 +27,7 @@ const contactsRef: { current: ContactRef[] } = { current: [] };
  */
 export function useTextChat(props?: UseTextChatProps) {
   const listContactQuery = useListContacts();
-  const localPeerIdQuery = useLocalPeerId();
+  void useLocalPeerId();
   const messagesByPeer = useSyncExternalStore(
     subscribeMessages,
     getMessagesSnapshot,
@@ -46,24 +45,6 @@ export function useTextChat(props?: UseTextChatProps) {
       unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    async function syncTransport() {
-      const localPeerId = localPeerIdQuery.data;
-      if (!localPeerId) {
-        return;
-      }
-      await api.startNetwork();
-      for (const contact of listContactQuery.data ?? []) {
-        await ensureTextTransport(
-          localPeerId,
-          contact.peerId,
-          contact.conversationId
-        );
-      }
-    }
-    syncTransport();
-  }, [listContactQuery.data, localPeerIdQuery.data]);
 
   useEffect(() => {
     contactsRef.current = (listContactQuery.data ?? []).map((c) => ({
@@ -88,9 +69,19 @@ export function useTextChat(props?: UseTextChatProps) {
           updatePeerMessages(peerId, (list) => {
             let changed = false;
             const next = list.map((m) => {
-              if (m.id === messageId && m.deliveredAt !== deliveredAt) {
-                changed = true;
-                return { ...m, deliveredAt };
+              if (m.id === messageId) {
+                const nextPending = false;
+                if (
+                  m.deliveredAt !== deliveredAt ||
+                  m.pending !== nextPending
+                ) {
+                  changed = true;
+                  return {
+                    ...m,
+                    deliveredAt,
+                    pending: nextPending,
+                  };
+                }
               }
               return m;
             });

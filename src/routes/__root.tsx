@@ -13,7 +13,7 @@ export const Route = createRootRoute({
       {
         name: "viewport",
         content:
-          "width=device-width, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no viewport-fit=cover",
+          "width=device-width, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover",
       },
     ],
     links: [{ rel: "stylesheet", href: appCss }],
@@ -30,8 +30,9 @@ function RootLayout() {
     <QueryClientProvider client={queryClient}>
       <main
         className={cn(
-          "h-screen w-full",
-          ["android", "ios"].includes(currentPlatform) && "h-[95vh] mt-auto",
+          "h-screen 0 w-full overflow-hidden flex flex-col",
+          ["android", "ios"].includes(currentPlatform) &&
+            "safe-area-pad absolute bottom-10 left-0 h-[90%]",
         )}
       >
         <AppProviders>

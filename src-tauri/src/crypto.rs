@@ -18,6 +18,8 @@ pub struct WireChat {
     pub sender_peer_id: String,
     pub ciphertext: String,
     pub sent_at: i64,
+    #[serde(default)]
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,14 +29,6 @@ pub struct WireAck {
     pub conversation_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WireRead {
-    pub message_id: String,
-    pub conversation_id: String,
-}
-
-/// Gossip envelope for encrypted signaling — enables self-echo filtering in the swarm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignalWire {
@@ -61,25 +55,6 @@ pub fn signal_wire_emit_payload(identity: &Identity, raw: &str) -> Option<String
     Some(wire.payload)
 }
 
-pub fn conversation_id(local: &[u8; 32], remote: &[u8; 32]) -> String {
-    let (a, b) = if local < remote {
-        (local, remote)
-    } else {
-        (remote, local)
-    };
-    let mut hasher = Sha256::new();
-    hasher.update(a);
-    hasher.update(b);
-    hex::encode(hasher.finalize())
-}
-
-pub fn room_topic_hash(code: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"vibe-room-v1");
-    hasher.update(code.trim().to_uppercase().as_bytes());
-    hex::encode(hasher.finalize())
-}
-
 /// Shared symmetric key for a contact pair (same bytes on both devices).
 pub fn derive_session_key(local_peer_id: &[u8; 32], remote_peer_id: &[u8; 32]) -> [u8; 32] {
     let (a, b) = if local_peer_id < remote_peer_id {
@@ -92,6 +67,25 @@ pub fn derive_session_key(local_peer_id: &[u8; 32], remote_peer_id: &[u8; 32]) -
     hasher.update(a);
     hasher.update(b);
     hasher.finalize().into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireRead {
+    pub message_id: String,
+    pub conversation_id: String,
+}
+
+pub fn conversation_id(local: &[u8; 32], remote: &[u8; 32]) -> String {
+    let (a, b) = if local < remote {
+        (local, remote)
+    } else {
+        (remote, local)
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(a);
+    hasher.update(b);
+    hex::encode(hasher.finalize())
 }
 
 pub fn encrypt_message(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
@@ -125,6 +119,9 @@ pub fn ensure_session_key(
     remote_peer_b64: &str,
 ) -> Result<[u8; 32]> {
     if let Some(key) = store.get_session_key(remote_peer_b64) {
+        if store.is_noise_ready(remote_peer_b64) {
+            return Ok(key);
+        }
         return Ok(key);
     }
     let local = *identity.verifying_key.as_bytes();
@@ -132,6 +129,15 @@ pub fn ensure_session_key(
     let key = derive_session_key(&local, &remote);
     store.set_session_key(remote_peer_b64, key);
     Ok(key)
+}
+
+pub fn install_noise_session_key(
+    store: &mut EphemeralStore,
+    remote_peer_b64: &str,
+    key: [u8; 32],
+) {
+    store.set_session_key(remote_peer_b64, key);
+    store.set_noise_ready(remote_peer_b64, true);
 }
 
 pub fn encrypt_for_peer(
@@ -174,6 +180,7 @@ pub fn build_wire_chat(
     body: &str,
 ) -> Result<(WireChat, Vec<u8>)> {
     let message_id = format!("{:016x}", rand::random::<u64>());
+    let seq = store.next_outgoing_seq(conversation_id);
     let ciphertext = encrypt_for_peer(identity, store, peer_id, body.as_bytes())?;
     let sent_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -186,6 +193,7 @@ pub fn build_wire_chat(
         sender_peer_id: identity.peer_id_b64(),
         ciphertext,
         sent_at,
+        seq,
     };
     let wire_bytes = serde_json::to_vec(&wire)?;
     Ok((wire, wire_bytes))
@@ -203,6 +211,7 @@ pub fn build_wire_chat_from_message(
         sender_peer_id: identity.peer_id_b64(),
         ciphertext,
         sent_at: msg.sent_at,
+        seq: 0,
     };
     let wire_bytes = serde_json::to_vec(&wire)?;
     Ok((wire, wire_bytes))
@@ -338,6 +347,9 @@ pub fn ingest_wire_chat(
 ) -> Result<Option<MessageRow>> {
     let wire: WireChat = serde_json::from_slice(wire_bytes)?;
     if wire.sender_peer_id == identity.peer_id_b64() {
+        return Ok(None);
+    }
+    if wire.seq > 0 && !store.accept_incoming_seq(&wire.conversation_id, wire.seq) {
         return Ok(None);
     }
 

@@ -2,9 +2,9 @@ import {
   applyRemoteDescription,
   CALL_ICE_GATHER_TIMEOUT_MS,
   type CallSignalingMessage,
-  closeCallPeerConnection,
+  attachLocalCallTracks,
   ensureCallPeerConnection,
-  ensureConversationSignaling,
+  removeCallTracks,
   clearOrphanedCallIce,
   flushPendingIce,
   flushPendingLocalIce,
@@ -15,7 +15,6 @@ import {
   sessionDescriptionPayload,
   setCallIceReady,
   setSignalingLocalPeerId,
-  setTextTransportPaused,
   stopMediaTracks,
   waitForIceGathering,
 } from "@/lib/webrtc";
@@ -94,6 +93,43 @@ function wireCallRemoteTracks(peerId: string) {
     state.remoteStream = stream;
     notify();
   };
+  peer.pc.oniceconnectionstatechange = () => {
+    const ice = peer.pc.iceConnectionState;
+    if (ice === "failed" && state.active?.phase === "connecting") {
+      try {
+        peer.pc.restartIce();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+}
+
+function applyCodecPreferences(pc: RTCPeerConnection, media: CallMedia) {
+  try {
+    const audioCaps = RTCRtpSender.getCapabilities?.("audio");
+    const opus = audioCaps?.codecs?.filter((c) => c.mimeType === "audio/opus");
+    if (opus?.length) {
+      for (const transceiver of pc.getTransceivers()) {
+        if (transceiver.sender.track?.kind === "audio") {
+          transceiver.setCodecPreferences(opus);
+        }
+      }
+    }
+    if (media === "video") {
+      const videoCaps = RTCRtpSender.getCapabilities?.("video");
+      const vp9 = videoCaps?.codecs?.filter((c) => c.mimeType === "video/VP9");
+      if (vp9?.length) {
+        for (const transceiver of pc.getTransceivers()) {
+          if (transceiver.sender.track?.kind === "video") {
+            transceiver.setCodecPreferences(vp9);
+          }
+        }
+      }
+    }
+  } catch {
+    /* optional — browser negotiates Opus/VP9 by default */
+  }
 }
 
 export type IncomingCall = NonNullable<CallState["pendingIncoming"]>;
@@ -210,16 +246,6 @@ async function getUserMedia(media: CallMedia): Promise<MediaStream> {
   }
 }
 
-function attachLocalTracks(peerId: string, stream: MediaStream) {
-  const peer = getCallPeerConnection(peerId);
-  if (!peer) return;
-  for (const track of stream.getAudioTracks()) {
-    track.enabled = true;
-  }
-  for (const track of stream.getTracks()) {
-    peer.pc.addTrack(track, stream);
-  }
-}
 
 function cleanupMedia(peerId: string) {
   stopMediaTracks(peerId);
@@ -229,14 +255,13 @@ function cleanupMedia(peerId: string) {
 }
 
 function abortActiveCall(peerId: string) {
-  setTextTransportPaused(false);
   const conversationId =
     state.active?.conversationId ?? state.pendingIncoming?.conversationId;
   if (conversationId) {
     clearOrphanedCallIce(conversationId, peerId);
   }
   cleanupMedia(peerId);
-  closeCallPeerConnection(peerId);
+  removeCallTracks(peerId);
   state.pendingIncoming = null;
   state.active = null;
   notify();
@@ -319,7 +344,6 @@ async function handleCallSignalingImpl(
       return;
     }
 
-    setTextTransportPaused(true);
     clearOrphanedCallIce(conversationId, remotePeerId);
 
     state.pendingIncoming = {
@@ -389,16 +413,14 @@ async function handleCallSignalingImpl(
     if (active.signaled) {
       await persistCallHistory(active, outcome);
     }
-    setTextTransportPaused(false);
     clearOrphanedCallIce(conversationId, remotePeerId);
     cleanupMedia(remotePeerId);
-    closeCallPeerConnection(remotePeerId);
+    removeCallTracks(remotePeerId);
     state.active = { ...active, phase: "ended" };
     state.pendingIncoming = null;
     notify();
     setTimeout(() => {
       if (state.active?.phase === "ended") {
-        setTextTransportPaused(false);
         state.active = null;
         notify();
       }
@@ -435,13 +457,6 @@ export async function setupCallSignaling(
   contactsByPeer = new Map(contacts.map((c) => [c.peerId, c]));
 
   registerSignalingRoutes({ onCall: handleCallSignaling });
-
-  for (const contact of contacts) {
-    await ensureConversationSignaling(
-      contact.conversationId,
-      contact.peerId
-    );
-  }
 }
 
 export async function startCall(
@@ -458,21 +473,6 @@ export async function startCall(
   }
 
   setSignalingLocalPeerId(localId);
-
-  const [peers, room] = await Promise.all([
-    api.overlayPeerCount(),
-    api.roomStatus(),
-  ]);
-  if (peers === 0 && !room.inRoom) {
-    throw new Error(
-      "Join a room with your contact before calling (same room code on both devices)"
-    );
-  }
-
-  await api.startNetwork();
-  await api.subscribeConversation(contact.conversationId);
-
-  setTextTransportPaused(true);
 
   const callLeg = allocCallLeg();
   state.active = {
@@ -500,12 +500,14 @@ export async function startCall(
     );
 
     wireCallRemoteTracks(contact.peerId);
-    attachLocalTracks(contact.peerId, stream);
+    setCallIceReady(contact.peerId, false);
+    attachLocalCallTracks(contact.peerId, stream);
 
     peer.makingOffer = true;
     try {
       const offer = await peer.pc.createOffer(callOfferOptions(media));
       await peer.pc.setLocalDescription(offer);
+      applyCodecPreferences(peer.pc, media);
       await waitForIceGathering(peer.pc, CALL_ICE_GATHER_TIMEOUT_MS);
       const inviteSdp =
         sessionDescriptionPayload(peer.pc.localDescription) ?? offer;
@@ -545,11 +547,6 @@ export async function acceptCall(localId: string) {
 
   setPhase("connecting");
 
-  await api.startNetwork();
-  await api.subscribeConversation(incoming.conversationId);
-
-  setTextTransportPaused(true);
-
   let peer: Awaited<ReturnType<typeof ensureCallPeerConnection>> | undefined;
   try {
     peer = await ensureCallPeerConnection(
@@ -563,7 +560,7 @@ export async function acceptCall(localId: string) {
 
     const stream = await getUserMedia(incoming.media);
     state.localStream = stream;
-    attachLocalTracks(incoming.peerId, stream);
+    attachLocalCallTracks(incoming.peerId, stream);
 
     await applyRemoteDescription(peer.pc, incoming.sdp);
     await flushPendingIce(peer);
@@ -628,10 +625,9 @@ export async function declineCall() {
     await persistCallHistory(state.active, "declined");
   }
 
-  setTextTransportPaused(false);
   clearOrphanedCallIce(incoming.conversationId, incoming.peerId);
   cleanupMedia(incoming.peerId);
-  closeCallPeerConnection(incoming.peerId);
+  removeCallTracks(incoming.peerId);
 
   await publishSignalingMessage(
     incoming.conversationId,
@@ -673,10 +669,9 @@ async function endCallInternal(sendSignal: boolean) {
     }
   }
 
-  setTextTransportPaused(false);
   clearOrphanedCallIce(active.conversationId, active.peerId);
   cleanupMedia(active.peerId);
-  closeCallPeerConnection(active.peerId);
+  removeCallTracks(active.peerId);
 
   state.pendingIncoming = null;
   state.active = { ...active, phase: "ended" };
@@ -684,7 +679,6 @@ async function endCallInternal(sendSignal: boolean) {
 
   setTimeout(() => {
     if (state.active?.phase === "ended") {
-      setTextTransportPaused(false);
       state.active = null;
       notify();
     }

@@ -38,8 +38,26 @@ impl Clone for Identity {
 
 impl Identity {
     pub fn generate() -> Result<Self> {
-        let libp2p_keypair = Keypair::generate_ed25519();
-        Self::from_libp2p_keypair(libp2p_keypair)
+        Self::from_libp2p_keypair(Keypair::generate_ed25519())
+    }
+
+    fn from_libp2p_keypair(libp2p_keypair: Keypair) -> Result<Self> {
+        let ed = libp2p_keypair
+            .clone()
+            .try_into_ed25519()
+            .map_err(|e| anyhow!("libp2p key: {e}"))?;
+        let sk_bytes: [u8; 32] = ed
+            .secret()
+            .as_ref()
+            .try_into()
+            .map_err(|_| anyhow!("invalid secret key length"))?;
+        let signing_key = SigningKey::from_bytes(&sk_bytes);
+        let verifying_key = signing_key.verifying_key();
+        Ok(Self {
+            signing_key,
+            verifying_key,
+            libp2p_keypair,
+        })
     }
 
     pub fn from_backup(json: &str) -> Result<Self> {
@@ -82,6 +100,7 @@ impl Identity {
                 Keypair::from_protobuf_encoding(&bytes).context("decode identity.protobuf")?;
             let identity = Self::from_libp2p_keypair(libp2p_keypair)?;
             identity.save(data_dir)?;
+            let _ = std::fs::remove_file(proto_path);
             return Ok(identity);
         }
 
@@ -118,39 +137,10 @@ impl Identity {
         Ok(bytes)
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
-        use ed25519_dalek::Signer;
-        self.signing_key.sign(msg).to_bytes().to_vec()
-    }
-
-    pub fn verify(peer_id: &[u8; 32], msg: &[u8], sig: &[u8]) -> bool {
-        let Ok(vk) = VerifyingKey::from_bytes(peer_id) else {
-            return false;
-        };
-        let Ok(sig) = ed25519_dalek::Signature::from_slice(sig) else {
-            return false;
-        };
-        use ed25519_dalek::Verifier;
-        vk.verify(msg, &sig).is_ok()
-    }
-
-    fn from_libp2p_keypair(libp2p_keypair: Keypair) -> Result<Self> {
-        let ed = libp2p_keypair
-            .clone()
-            .try_into_ed25519()
-            .map_err(|e| anyhow!("{e}"))?;
-        let sk_bytes: [u8; 32] = ed
-            .secret()
-            .as_ref()
-            .try_into()
-            .map_err(|_| anyhow!("invalid secret key length"))?;
-        let signing_key = SigningKey::from_bytes(&sk_bytes);
-        let verifying_key = signing_key.verifying_key();
-        Ok(Self {
-            signing_key,
-            verifying_key,
-            libp2p_keypair,
-        })
+    fn from_legacy_protobuf(bytes: &[u8]) -> Result<Self> {
+        let keypair =
+            Keypair::from_protobuf_encoding(bytes).context("decode legacy identity.protobuf")?;
+        Self::from_libp2p_keypair(keypair)
     }
 }
 

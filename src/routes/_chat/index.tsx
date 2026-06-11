@@ -10,7 +10,9 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { useContactReachability } from "@/hooks/use-contact-reachability";
 import { useOverlayPeers } from "@/hooks/use-overlay-peers";
+import { useListContacts } from "@/hooks/contacts";
 
 export const Route = createFileRoute("/_chat/")({
   component: RouteComponent,
@@ -19,23 +21,24 @@ export const Route = createFileRoute("/_chat/")({
 
 function RouteComponent() {
   const { id } = Route.useSearch();
+  const listContactQuery = useListContacts();
+  const reachable = useContactReachability();
   const overlayPeers = useOverlayPeers();
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const hasContacts = (listContactQuery.data?.length ?? 0) > 0;
+  const noneReachable = hasContacts && reachable.size === 0;
 
   return (
-    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col">
-      {overlayPeers === 0 && (
+    <div className="h-full w-full">
+      {noneReachable && overlayPeers === 0 && (
         <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
-          Offline — you can still send messages; they will deliver when you
-          reconnect. Join a room or add a contact via QR to get on the network.
+          No connected libp2p peers yet. Open a mutual contact&apos;s chat to
+          auto-connect once you are overlay peers.
         </p>
       )}
 
       {isDesktop ? (
-        <ResizablePanelGroup
-          orientation="horizontal"
-          className="h-full min-h-0 w-full"
-        >
+        <ResizablePanelGroup orientation="horizontal" className="h-full w-full">
           <ResizablePanel
             id="chat-list"
             defaultSize="25%"
@@ -52,7 +55,7 @@ function RouteComponent() {
       ) : id ? (
         <ChatThread key={id} id={id} />
       ) : (
-        <div className="h-full min-h-0 w-full min-w-0">
+        <div className="h-full w-full">
           <ChatList />
         </div>
       )}

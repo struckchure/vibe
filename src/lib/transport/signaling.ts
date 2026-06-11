@@ -32,22 +32,63 @@ export type SignalingRoutes = {
   ) => void | Promise<void>;
 };
 
+type SignalChannelEntry = {
+  remotePeerId: string;
+  conversationId: string;
+  channel: RTCDataChannel;
+};
+
 let signalingLocalPeerId: string | null = null;
 let routes: SignalingRoutes = {};
+const signalChannels = new Map<string, SignalChannelEntry>();
 
 /** One gossipsub listener per conversation — avoids handling each message twice. */
 const signalingUnlistenByConversation = new Map<string, () => void>();
 
-const SIGNAL_PUBLISH_RETRIES = 10;
-const SIGNAL_PUBLISH_RETRY_MS = 350;
+const SIGNAL_DELIVERY_RETRIES = 10;
+const SIGNAL_DELIVERY_RETRY_MS = 350;
+const SIGNAL_DC_RETRIES = 15;
+const SIGNAL_DC_RETRY_MS = 200;
 
-/** Set before publishing so gossipsub self-echo can be dropped in dispatch. */
 export function setSignalingLocalPeerId(peerId: string) {
   signalingLocalPeerId = peerId;
 }
 
 export function registerSignalingRoutes(next: SignalingRoutes) {
   routes = { ...routes, ...next };
+}
+
+export function attachSignalingChannel(
+  remotePeerId: string,
+  conversationId: string,
+  channel: RTCDataChannel
+) {
+  const existing = signalChannels.get(remotePeerId);
+  if (existing?.channel === channel) {
+    return;
+  }
+  channel.onmessage = (ev) => {
+    const payload =
+      typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+    void dispatchSignaling(remotePeerId, conversationId, payload);
+  };
+  signalChannels.set(remotePeerId, { remotePeerId, conversationId, channel });
+}
+
+export function detachSignalingChannel(remotePeerId: string) {
+  signalChannels.delete(remotePeerId);
+}
+
+export function isSignalingChannelOpen(peerId: string): boolean {
+  return signalChannels.get(peerId)?.channel.readyState === "open";
+}
+
+function getSignalChannel(peerId: string): RTCDataChannel | undefined {
+  const entry = signalChannels.get(peerId);
+  if (entry?.channel.readyState === "open") {
+    return entry.channel;
+  }
+  return undefined;
 }
 
 function unwrapSignalingWire(raw: string): string | null {
@@ -73,24 +114,69 @@ function unwrapSignalingWire(raw: string): string | null {
 
 function formatPublishError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  if (raw.includes("InsufficientPeers")) {
-    return "Could not reach your contact on the network yet — keep both devices in the same room and try again";
+  if (raw.includes("InsufficientPeers") || raw.includes("no connected libp2p")) {
+    return "Your contact is not connected on the libp2p overlay yet";
   }
-  return raw || "Could not send call signal";
+  return raw || "Could not send signaling";
+}
+
+async function sendOnSignalChannel(
+  remotePeerId: string,
+  encrypted: string,
+  waitForDelivery: boolean
+) {
+  const send = () => {
+    const channel = getSignalChannel(remotePeerId);
+    if (!channel) {
+      throw new Error("signaling channel not open");
+    }
+    channel.send(JSON.stringify({ payload: encrypted }));
+  };
+
+  if (!waitForDelivery) {
+    send();
+    return;
+  }
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < SIGNAL_DC_RETRIES; attempt++) {
+    try {
+      send();
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === SIGNAL_DC_RETRIES - 1) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, SIGNAL_DC_RETRY_MS));
+    }
+  }
+  throw new Error(formatPublishError(lastErr));
 }
 
 async function publishEncryptedSignaling(
   conversationId: string,
+  remotePeerId: string,
   encrypted: string,
   waitForDelivery: boolean
 ) {
+  if (isSignalingChannelOpen(remotePeerId)) {
+    await sendOnSignalChannel(remotePeerId, encrypted, waitForDelivery);
+    return;
+  }
+
+  const connected = await api.isOverlayPeerConnected(remotePeerId);
+  if (!connected) {
+    throw new Error("contact is not a connected libp2p peer");
+  }
+
   if (!waitForDelivery) {
     await api.publishSignaling(conversationId, encrypted, false);
     return;
   }
 
   let lastErr: unknown;
-  for (let attempt = 0; attempt < SIGNAL_PUBLISH_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < SIGNAL_DELIVERY_RETRIES; attempt++) {
     try {
       await api.publishSignaling(conversationId, encrypted, true);
       return;
@@ -98,12 +184,15 @@ async function publishEncryptedSignaling(
       lastErr = err;
       const raw = err instanceof Error ? err.message : String(err);
       if (
-        !raw.includes("InsufficientPeers") ||
-        attempt === SIGNAL_PUBLISH_RETRIES - 1
+        !raw.includes("InsufficientPeers") &&
+        !raw.includes("no connected libp2p")
       ) {
         break;
       }
-      await new Promise((r) => setTimeout(r, SIGNAL_PUBLISH_RETRY_MS));
+      if (attempt === SIGNAL_DELIVERY_RETRIES - 1) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, SIGNAL_DELIVERY_RETRY_MS));
     }
   }
   throw new Error(formatPublishError(lastErr));
@@ -124,6 +213,7 @@ export async function publishSignalingMessage(
   );
   await publishEncryptedSignaling(
     conversationId,
+    remotePeerId,
     encrypted,
     options?.waitForDelivery ?? true
   );
@@ -165,7 +255,18 @@ async function dispatchSignaling(
   conversationId: string,
   wirePayload: string
 ) {
-  const encryptedPayload = unwrapSignalingWire(wirePayload);
+  let encryptedPayload: string | null = null;
+  try {
+    const outer = JSON.parse(wirePayload) as { payload?: string };
+    if (typeof outer.payload === "string") {
+      encryptedPayload = outer.payload;
+    }
+  } catch {
+    /* not JSON — gossipsub inner ciphertext */
+  }
+  if (!encryptedPayload) {
+    encryptedPayload = unwrapSignalingWire(wirePayload);
+  }
   if (!encryptedPayload) {
     return;
   }

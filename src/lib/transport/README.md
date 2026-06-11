@@ -11,20 +11,34 @@ For platform-level architecture, see [ARCHITECTURE.md](../../../ARCHITECTURE.md)
 | File | Role |
 |------|------|
 | `types.ts` | Signaling message types, envelope shapes, call/text discriminated unions |
-| `signaling.ts` | Gossipsub listener, encrypt/decrypt via Tauri, route dispatch |
-| `wire.ts` | Data channel bytes, gossipsub send, message ingest |
-| `rtc-utils.ts` | ICE servers, SDP helpers, polite/impolite role |
+| `signaling.ts` | `vibe/signal` DC when open; else gossipsub via Rust overlay, encrypt/decrypt via Tauri |
+| `noise-handshake.ts` | Noise XX over `vibe/noise` data channel |
+| `wire.ts` | Data channel bytes and message ingest |
+| `rtc-utils.ts` | SDP helpers, channel labels, polite/impolite role |
 | `ice-buffer.ts` | Queued ICE candidates (inbound, outbound, orphan call ICE) |
-| `text-peer.ts` | Text `RTCPeerConnection` registry + negotiation + data channel |
-| `call-peer.ts` | Call `RTCPeerConnection` registry + track merge |
+| `peer-connection.ts` | Single `RTCPeerConnection` per peer (text + signal + noise DCs + call media) |
 | `register.ts` | Bootstraps default signaling routes at import (side effect) |
 
 ## Rules
 
 - `signaling.ts` and `wire.ts` never import `RTCPeerConnection` — they only move encrypted bytes.
-- **Dual PC model:** one text PC + one call PC per remote peer. Call renegotiation must not block chat.
-- **Polite / impolite negotiation:** the peer with the lexicographically **higher** Peer ID is the offerer; the lower peer answers. This avoids offer glare when both sides connect at once.
+- **Single PC model:** one `RTCPeerConnection` per remote peer carries text, signaling, noise, and call media.
+- **Polite / impolite negotiation:** the peer with the lexicographically **higher** Peer ID is the offerer for manual SDP exchange and Noise initiator.
 - `registerSignalingRoutes` **merges** partial route maps — callers add handlers without wiping existing routes.
+
+## Connection bootstrap
+
+**Primary (auto-connect):**
+
+1. Add contact via QR (`vibe://peer/…`), deep link, or pasted peer ID.
+2. Establish a **libp2p TCP connection** to the contact (explicit `dial_contact` multiaddrs or inbound dial).
+3. Open the contact's chat on both sides → `useAutoConnect` runs `ensureTextTransport` when the contact is a connected overlay peer.
+4. Impolite peer (higher peer ID) publishes an SDP offer on gossipsub `vibe/signal/<conversation_id>`; polite peer answers.
+5. After WebRTC connects → Noise XX on `vibe/noise`, then chat on `vibe/text`.
+
+**Fallback:** Advanced → manual `vibe://connect` links — see [`connect-uri.ts`](../connect-uri.ts) and [`connect-handler.ts`](../connect-handler.ts).
+
+No LAN/mDNS, bootstrap, relay, or DHT in the overlay — gossipsub only among **connected** libp2p peers.
 
 ## Data flow (text)
 
@@ -32,48 +46,29 @@ For platform-level architecture, see [ARCHITECTURE.md](../../../ARCHITECTURE.md)
 flowchart LR
   UI[React UI / useTextChat]
   Barrel[webrtc.ts barrel]
-  TextPeer[text-peer.ts]
+  PeerConn[peer-connection.ts]
   Signaling[signaling.ts]
   Wire[wire.ts]
   Tauri[tauri.ts IPC]
-  Gossip[gossipsub Rust]
 
   UI --> Barrel
-  Barrel --> TextPeer
-  TextPeer --> Signaling
-  TextPeer --> Wire
-  Signaling --> Tauri --> Gossip
+  Barrel --> PeerConn
+  PeerConn --> Signaling
+  PeerConn --> Wire
+  Signaling -->|vibe/signal DC| Signaling
   Wire --> Tauri
-  Gossip --> Tauri --> Signaling
+  Tauri --> Wire
 ```
 
-1. UI calls `ensureTextTransport` / `sendTextMessage` via the barrel.
-2. `text-peer.ts` builds SDP/ICE and passes JSON through `signaling.ts`.
-3. Rust encrypts and publishes on `vibe/signal/{conversation_id}`.
-4. Remote Rust decrypts → emits `signaling` event → TS applies remote description/ICE.
-5. When the data channel opens, `wire.ts` sends raw encrypted bytes on the DC; otherwise gossipsub relay.
+1. UI calls `sendTextMessage` via the barrel.
+2. If the text data channel is open and Noise is ready, `wire.ts` sends encrypted bytes on the DC.
+3. Otherwise the message is persisted as **pending** and flushed when the session is ready.
 
 ## Data flow (calls)
 
-```mermaid
-flowchart LR
-  UI[useVoiceChat / useVideoChat]
-  Calls[calls.ts]
-  CallPeer[call-peer.ts]
-  Signaling[signaling.ts]
-  Tauri[tauri.ts IPC]
-  Gossip[gossipsub Rust]
-
-  UI --> Calls
-  Calls --> CallPeer
-  CallPeer --> Signaling
-  Signaling --> Tauri --> Gossip
-  Gossip --> Tauri --> Signaling
-```
-
 1. `calls.ts` owns call state (invite, accept, decline, end) and media streams.
-2. `call-peer.ts` manages a dedicated call PC per peer (separate from text).
-3. Call signaling uses the same encrypted gossipsub path with `call-*` message types.
+2. `peer-connection.ts` attaches call tracks to the shared PC per peer.
+3. Call signaling uses the encrypted `vibe/signal` data channel with `call-*` message types.
 4. UI subscribes via `subscribeCallState` / `getCallSnapshot` (external store, not React).
 
 ## Public API
@@ -82,12 +77,27 @@ Re-exported from `@/lib/webrtc`:
 
 | Export | Purpose |
 |--------|---------|
-| `ensureTextTransport`, `closeTextTransport`, `resetTextTransport` | Text PC lifecycle |
-| `sendTextMessage`, `isTextChannelOpen`, `subscribeTextChannelState` | Hybrid DC / gossipsub send |
+| `ensurePeerConnection`, `createConnectionOffer`, `closePeerConnection`, … | PC lifecycle |
+| `sendTextMessage`, `flushPendingMessages`, `isTextChannelOpen`, `subscribeTransportState` | DC chat send |
 | `ensureCallPeerConnection`, `closeCallPeerConnection`, … | Call PC lifecycle (used by `calls.ts`) |
 | `registerSignalingRoutes`, `publishSignalingMessage`, … | Signaling hooks |
-| `ICE_SERVERS`, `TEXT_CHANNEL_LABEL`, … | Shared RTC constants |
+| `TEXT_CHANNEL_LABEL`, `resolveIceServers` (via `ice-config.ts`), … | Shared RTC constants |
+
+Connect link helpers live in `@/lib/connect-uri.ts` and `@/lib/sdp-exchange.ts`.
 
 Call session API lives in `@/lib/calls.ts` (`startCall`, `acceptCall`, `subscribeCallState`, …).
 
 React bindings: `useTextChat`, `useVoiceChat`, `useVideoChat` in `src/hooks/`.
+
+## ICE / TURN
+
+STUN/TURN servers are configured in `src/lib/ice-config.ts` (Metered community catalog). Rust no longer runs libp2p or serves ICE config — storage and crypto only.
+
+## Rust responsibilities
+
+| Command | Role |
+|---------|------|
+| `prepare_wire_message`, `ingest_dc_message` | ChaCha20-Poly1305 chat wire |
+| `encrypt_signaling`, `decrypt_signaling` | Signaling ciphertext (requires Noise session) |
+| `noise_handshake_*` | Noise XX steps over `vibe/noise` |
+| `persist_outgoing_message`, `list_pending_outgoing` | Pending queue when DC not ready |

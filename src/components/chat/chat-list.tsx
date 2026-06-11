@@ -1,7 +1,7 @@
-import { PlusIcon, QrCodeIcon, UsersIcon } from "lucide-react";
+import { PlusIcon, QrCodeIcon } from "lucide-react";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { DiscoveryDialogs } from "@/components/chat/discovery-dialogs";
 import { IdentityDialog } from "@/components/chat/identity-dialog";
@@ -51,13 +51,7 @@ export function ChatList() {
   const isPending = listContactQuery.isPending;
 
   const [addContactOpen, setAddContactOpen] = useState(false);
-  const [joinRoomOpen, setJoinRoomOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
-
-  const contactPeerIds = useMemo(
-    () => new Set(contacts.map((c) => c.peerId)),
-    [contacts],
-  );
 
   useEffect(() => {
     const unlisten = api.onIdentityChanged(() => {
@@ -76,7 +70,7 @@ export function ChatList() {
 
   return (
     <>
-      <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
+      <div className="flex h-full w-full flex-col">
         <header className="flex shrink-0 items-center justify-between gap-2 px-3 py-3">
           <h2 className="text-sm font-medium">Chats</h2>
           <div className="flex gap-1">
@@ -87,14 +81,6 @@ export function ChatList() {
               aria-label="Identity"
             >
               <QrCodeIcon data-icon="inline-start" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setJoinRoomOpen(true)}
-              aria-label="Join room"
-            >
-              <UsersIcon data-icon="inline-start" />
             </Button>
             <Button
               variant="ghost"
@@ -117,7 +103,7 @@ export function ChatList() {
               </div>
             ) : contacts.length === 0 ? (
               <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-                No conversations yet. Add a contact or join a room.
+                No conversations yet. Add a contact to get started.
               </p>
             ) : (
               contacts.map((c) => (
@@ -184,9 +170,6 @@ export function ChatList() {
       <DiscoveryDialogs
         addContactOpen={addContactOpen}
         onAddContactOpenChange={setAddContactOpen}
-        joinRoomOpen={joinRoomOpen}
-        onJoinRoomOpenChange={setJoinRoomOpen}
-        contactPeerIds={contactPeerIds}
       />
     </>
   );

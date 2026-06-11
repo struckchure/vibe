@@ -45,7 +45,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Vibe needs camera access for video calls.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Vibe uses the local network for faster peer discovery when you are on the same Wi-Fi. Internet access is also used to find contacts in your room across any network.</string>
+	<string>Vibe uses the local network for faster peer discovery on the same Wi-Fi. Internet access is used for cross-network peer discovery, relay, STUN/TURN, and messaging.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_p2p._udp</string>
