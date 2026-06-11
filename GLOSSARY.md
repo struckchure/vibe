@@ -60,11 +60,15 @@ Process that discovers usable network paths between two peers (local LAN address
 
 ### STUN (Session Traversal Utilities for NAT)
 
-Lightweight protocol that helps a peer learn its public IP and port behind a NAT. Does not relay traffic — only assists discovery. In the **Pragmatic** network profile, users may configure STUN servers; the spec prohibits hardcoded third-party STUN by default.
+Lightweight protocol that helps a peer learn its public IP and port behind a NAT. Does not relay traffic — only assists discovery. Vibe uses **community-catalog** STUN endpoints running OSS software (e.g. coturn); the default Pragmatic install enables `stun:stun.relay.metered.ca:80`. Proprietary STUN (such as Google’s public servers) is excluded from the catalog.
 
 ### TURN (Traversal Using Relays around NAT)
 
-Relay server that forwards media when direct peer-to-peer paths fail (symmetric NAT, strict firewalls). Vibe does not operate TURN; users may optionally point at **self-hosted** TURN in the Pragmatic profile.
+Relay server that forwards WebRTC traffic when direct peer-to-peer paths fail (symmetric NAT, strict firewalls). Vibe does not operate TURN. The default **community catalog** includes [Open Relay](https://www.metered.ca/tools/openrelay/) (coturn-based). Pragmatic users may add custom OSS or self-hosted TURN; Strict profile allows only catalog entries.
+
+### coturn
+
+Open-source STUN/TURN server ([github.com/coturn/coturn](https://github.com/coturn/coturn)). Reference implementation for community network helpers in the Vibe catalog; any operator may self-host an equivalent instance.
 
 ### SCTP / Data channel
 
@@ -112,7 +116,7 @@ Distributed hash table used by libp2p for storing and looking up peer routing re
 
 ### Circuit relay
 
-libp2p feature that routes traffic through another Vibe peer when direct connections fail. Allowed in both **Strict** and **Pragmatic** profiles; distinct from third-party TURN.
+libp2p feature that routes **overlay** traffic (gossipsub signaling, message fallback) through another peer when direct connections fail. Allowed in both **Strict** and **Pragmatic** profiles. Distinct from **WebRTC TURN**, which relays media and data-channel packets at the ICE layer (see SPEC §9.4).
 
 ### Rendezvous
 
@@ -198,9 +202,17 @@ JSON wire format for encrypted chat payloads on gossipsub and the WebRTC data ch
 
 Shared secret (6–8 characters) for scoped LAN discovery. Joining a room publishes signed **announce** messages on a derived gossipsub topic; messaging still requires adding the peer as a contact.
 
+### Community Network Helper
+
+Public endpoint running **OSS, self-hostable** server software (STUN, TURN, libp2p relay, or rendezvous) listed in the Vibe **community catalog** (SPEC §9.5). Not operated by the Vibe project. Default Pragmatic installs ship with catalog STUN/TURN enabled (Metered STUN + Open Relay TURN).
+
+### Community catalog
+
+Curated list of community network helpers shipped with the reference client. Stored in app data as `network-helpers.json` (`stunServers`, `turnServers`, `relayPeers`, `rendezvousPeers`). Both profiles share the same catalog entries for NAT helpers; **Pragmatic** enables them by default and allows custom helpers beyond the catalog.
+
 ### Strict / Pragmatic profiles
 
-Network policy presets. **Strict** avoids public STUN, HTTP IPFS gateways, and third-party pinners — NAT traversal relies on host candidates, hole punching, and libp2p relay. **Pragmatic** allows user-configured STUN, gateways, and pinners (all off by default).
+Network policy presets (SPEC §11). Both profiles use the **same community catalog** for STUN/TURN and libp2p relay/rendezvous. **Strict** honors catalog entries only — no custom third-party STUN/TURN, HTTP IPFS gateways, or remote pinners. **Pragmatic** enables the catalog by default and additionally allows custom OSS/self-hosted helpers, IPFS gateways, and pinners.
 
 ### Direct vs Network (transport badge)
 

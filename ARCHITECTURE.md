@@ -6,7 +6,7 @@ How **Vibe** works as a platform and how the reference client splits work betwee
 
 ## Platform overview
 
-Vibe is a peer-to-peer communications client with **no central servers** operated by the project. Two users who know each other's **Peer ID** (or meet via a shared **room code**) can:
+Vibe is a peer-to-peer communications client with **no central servers** operated by the project. Optional **community network helpers** (OSS STUN/TURN and libp2p relay/rendezvous from the community catalog, SPEC §9.5) assist NAT traversal but are not Vibe infrastructure. Two users who know each other's **Peer ID** (or meet via a shared **room code**) can:
 
 1. **Discover** each other on a libp2p overlay (LAN mDNS today; DHT on the roadmap).
 2. **Exchange encrypted signaling** over gossipsub so WebRTC can connect.
@@ -14,6 +14,15 @@ Vibe is a peer-to-peer communications client with **no central servers** operate
 4. **Call** (voice/video) over separate WebRTC peer connections using the same encrypted signaling path.
 
 There is no Vibe-hosted broker for messages, calls, or identity. Private keys and session crypto live in Rust; the webview renders UI and drives WebRTC APIs exposed by the platform.
+
+NAT traversal spans two layers that can fail independently:
+
+| Layer | Mechanism | What it connects |
+| ----- | --------- | ---------------- |
+| **Overlay** | libp2p circuit relay, rendezvous, DHT, mDNS | Gossipsub signaling, message fallback, discovery |
+| **WebRTC** | STUN, TURN (community catalog) | Data channels, voice/video media |
+
+A contact may be reachable on the overlay (signaling works) while WebRTC ICE still fails without TURN.
 
 ```mermaid
 flowchart TB
@@ -101,7 +110,9 @@ vibe/
     ├── lib.rs              # AppState, Tauri commands, wiring
     ├── identity.rs         # Ed25519 keypair, backup import/export
     ├── crypto.rs           # WireChat, signaling crypto, room hashes
-    ├── network.rs          # libp2p swarm, gossipsub, mDNS
+    ├── network.rs          # libp2p swarm, gossipsub, mDNS, relay, rendezvous
+    ├── network_helpers.rs  # network-helpers.json load/save, ICE server view
+    ├── bootstrap.rs        # libp2p bootstrap peers; empty default relay/rendezvous
     ├── store.rs            # contacts.json, per-peer message files
     └── outbox.rs           # Pending message flush over gossipsub
 ```
@@ -156,6 +167,34 @@ Runs a libp2p **Swarm** on a dedicated Tokio task with:
 
 Incoming gossipsub messages are decrypted/verified in Rust. Signaling payloads are emitted to the UI as `signaling` events; chat messages update the store and emit `message-received`.
 
+Also enabled in the swarm (roadmap / partial today): **Kademlia DHT**, **circuit relay v2** (client), **rendezvous** (client). Default libp2p bootstrap peers ship in `bootstrap.rs`; relay and rendezvous catalog slots are empty until community entries are vetted.
+
+### Network helpers (`network_helpers.rs`, `bootstrap.rs`)
+
+User-editable connectivity assistance stored at `{app_data}/network-helpers.json`:
+
+```json
+{
+  "relayPeers": ["/ip4/…/tcp/…/p2p/…"],
+  "rendezvousPeers": ["/ip4/…/tcp/…/p2p/…"],
+  "stunServers": ["stun:stun.relay.metered.ca:80"],
+  "turnServers": [{
+    "urls": [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:443?transport=tcp"
+    ],
+    "username": "openrelayproject",
+    "credential": "openrelayproject"
+  }]
+}
+```
+
+- Rust exposes `get_ice_servers` / `get_network_helpers` / `set_network_helpers` to the webview.
+- `ice_servers_for_client()` builds WebRTC `RTCIceServer` entries from `stunServers` + `turnServers`.
+- Per SPEC §9.5.3, Pragmatic factory installs **MUST** ship with the community STUN/TURN catalog enabled (Metered STUN + [Open Relay](https://www.metered.ca/tools/openrelay/) coturn TURN).
+- **Strict** profile: only catalog entries honored. **Pragmatic**: user may add custom OSS/self-hosted helpers beyond the catalog.
+
 ### Store (`store.rs`)
 
 Local persistence (not IPFS):
@@ -187,6 +226,7 @@ Implementation lives under [`src/lib/transport/`](src/lib/transport/README.md). 
 
 - **Text PC** — one connection per contact; data channel label `vibe/text`.
 - **Call PC** — separate connection for voice/video so call renegotiation does not block text.
+- **ICE servers** — `resolveIceServers()` in `src/lib/ice-config.ts` fetches `get_ice_servers` from Rust (`network-helpers.json`); falls back to community-catalog defaults when empty. Proprietary STUN (e.g. Google) is not in the spec catalog.
 
 See [`src/lib/transport/README.md`](src/lib/transport/README.md) for module layout and data-flow diagrams.
 
@@ -239,6 +279,7 @@ Routes under `src/routes/` provide the tab shell (text chat is primary; voice/vi
 | `start_network`, `subscribe_conversation`, `overlay_peer_count` | Overlay control |
 | `send_message`, `flush_outbox`, `prepare_wire_message`, `persist_outgoing_message` | Outbound chat |
 | `encrypt_signaling`, `decrypt_signaling`, `publish_signaling` | WebRTC signaling over gossipsub |
+| `get_ice_servers`, `get_network_helpers`, `set_network_helpers` | Community STUN/TURN and libp2p helper config |
 | `ingest_dc_message` | Inbound chat from data channel |
 | `list_messages`, `mark_conversation_read`, `record_call_history` | History and receipts |
 
@@ -253,6 +294,7 @@ Routes under `src/routes/` provide the tab shell (text chat is primary; voice/vi
 | `signaling` | Encrypted signaling payload for a conversation |
 | `room-peer` / `room-event` | Room discovery updates |
 | `overlay-peers-changed` | Connected libp2p peer count changed |
+| `contact-reachability-changed` | Known contact became reachable/unreachable on overlay |
 | `identity-changed` | Identity import/regenerate |
 | `outbox-flushed` | Pending messages retried |
 
@@ -335,6 +377,7 @@ Under the Tauri app data directory (platform-specific):
 | `identity.json` | Ed25519 public/private key (sensitive) |
 | `contacts.json` | Contact list and previews |
 | `messages/*.json` | Per-peer message history |
+| `network-helpers.json` | Community catalog STUN/TURN and libp2p relay/rendezvous endpoints |
 
 Session keys and crypto state live in the store's in-memory/disk structures managed alongside messages. This is **device-local** chat history, not IPFS-backed history (planned M3).
 
@@ -361,7 +404,9 @@ Development: `bun run tauri dev` starts Vite and the native app; mobile builds u
 | ---- | ----- | -------------- |
 | Message transport | WebRTC DC + gossipsub fallback | CBOR length-prefixed frames |
 | Discovery | mDNS + room codes | Kademlia DHT, rendezvous |
-| NAT traversal | STUN in webview ICE config; empty by default in strict spec | User-configured STUN/TURN (Pragmatic profile) |
+| NAT traversal (WebRTC) | `resolveIceServers()` + `network-helpers.json`; dev fallback to catalog STUN/TURN | Community catalog enabled by default in Pragmatic (§9.5); settings UI (M2) |
+| NAT traversal (overlay) | mDNS, DHT bootstrap, empty default relay/rendezvous | Community catalog entries for libp2p relay/rendezvous |
+| Network profiles | Catalog logic partial; no settings UI | Strict vs Pragmatic with catalog toggles (M2) |
 | Persistence | Local JSON files | IPFS profiles, attachments, optional encrypted history |
 | Group chat | Not implemented | Sender Keys, group manifest (M2) |
 | Full Noise handshake | Session keys in store | `/vibe/noise/1` stream before signaling (§9.3) |

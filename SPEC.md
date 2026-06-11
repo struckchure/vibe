@@ -2,13 +2,13 @@
 
 | Field            | Value                    |
 | ---------------- | ------------------------ |
-| **Spec version** | `0.1.0-draft`            |
+| **Spec version** | `0.2.0-draft`            |
 | **Status**       | Draft                    |
 | **License**      | MIT ([LICENSE](LICENSE)) |
 
 ## 1. Summary
 
-**Vibe** is a free, open-source, fully peer-to-peer communications platform. Users exchange text, voice, and video directly between devices using **WebRTC** for realtime transport and **IPFS** ([content-addressed storage](https://ipfs.tech/)) for durable artifacts they choose to persist. There is no Vibe-operated signaling, storage, or relay infrastructure. End-to-end encryption is mandatory for message and signaling payloads. Clients are built with **Tauri** (Rust core, webview UI) targeting desktop and mobile from a single codebase.
+**Vibe** is a free, open-source, fully peer-to-peer communications platform. Users exchange text, voice, and video directly between devices using **WebRTC** for realtime transport and **IPFS** ([content-addressed storage](https://ipfs.tech/)) for durable artifacts they choose to persist. There is no Vibe-operated signaling, storage, or relay infrastructure; optional **community network helpers** (OSS STUN/TURN and libp2p relay/rendezvous) MAY assist NAT traversal (§9.5). End-to-end encryption is mandatory for message and signaling payloads. Clients are built with **Tauri** (Rust core, webview UI) targeting desktop and mobile from a single codebase.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
@@ -22,13 +22,14 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 | --------------- | ------------------------------------------------------------------------------------------ |
 | **Realtime**    | 1:1 and group text; voice; video over WebRTC                                               |
 | **Persistence** | User-selected artifacts on IPFS: profiles, attachments, optional encrypted message history |
-| **Topology**    | Fully P2P: no Vibe-hosted servers for signaling, storage, or media relay                   |
+| **Topology**    | Fully P2P: no Vibe-hosted servers; community-operated OSS helpers MAY assist NAT (§9.5)     |
 | **Trust**       | E2EE by default; integrity of published blobs via IPFS CIDs                                |
 | **FOSS**        | Reproducible builds; open protocol and schema documentation                                |
 
 ### 2.2 Non-Goals (v1)
 
 - Federated or centralized chat servers, SMS bridges, or paid SaaS backends
+- Proprietary closed-source TURN/STUN or relay services in the default community catalog (managed hosts running OSS software such as [coturn](https://github.com/coturn/coturn) are permitted; see §9.5)
 - Server-based SFU/MCU for large group video (mesh limits are documented instead)
 - Blockchain identity, tokens, or on-chain registries
 - Platform-wide content moderation or global username reservation
@@ -44,7 +45,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 
 3. **Fail-open UX, fail-closed security** — Degraded connectivity MAY disable features with clear user feedback. Cryptographic verification failures MUST abort the affected operation; clients MUST NOT fall back to plaintext for user content.
 
-4. **User-controlled network posture** — **Strict** and **Pragmatic** profiles (§11) let users choose how much optional third-party assistance to allow. Neither profile introduces Vibe-operated infrastructure.
+4. **User-controlled network posture** — A curated **community catalog** of OSS, self-hostable network helpers (§9.5) ships with the reference client. **Strict** and **Pragmatic** profiles (§11) share the same catalog for STUN/TURN and libp2p relay/rendezvous; Pragmatic additionally allows custom helpers and IPFS gateways/pinners. Neither profile introduces Vibe-operated infrastructure.
 
 5. **Minimal metadata** — Designs SHOULD minimize metadata exposed on the overlay network; known limits are documented honestly (§13).
 
@@ -249,7 +250,7 @@ Encoding **SHOULD** be CBOR for canonical hashing; JSON MAY be accepted for debu
 | 1:1 call   | Single peer connection with audio + optional video tracks               |
 | Group call | Mesh; max **4** simultaneous media participants (`VIBE_GROUP_MESH_MAX`) |
 
-- Beyond `VIBE_GROUP_MESH_MAX`, clients **MUST** warn the user and **SHOULD** offer audio-only or async IPFS attachment fallback. SFU/TURN operated by Vibe is prohibited.
+- Beyond `VIBE_GROUP_MESH_MAX`, clients **MUST** warn the user and **SHOULD** offer audio-only or async IPFS attachment fallback. SFU/TURN operated by Vibe is prohibited. Community-operated TURN (e.g. coturn-based relays in §9.5) is permitted.
 
 ### 8.4 Codecs (Informative)
 
@@ -297,12 +298,84 @@ sequenceDiagram
 
 ### 9.4 ICE and NAT
 
+NAT traversal spans two layers that MUST be distinguished in implementations and UX:
+
+| Layer | Mechanism | Purpose |
+| ----- | --------- | ------- |
+| **Overlay** | libp2p circuit relay, rendezvous, DHT | Gossipsub signaling, message fallback, peer discovery |
+| **WebRTC** | STUN, TURN | ICE for data channels and media (DTLS-SRTP) |
+
+Signaling MAY succeed on the overlay while WebRTC media or data channels still fail if ICE cannot find a path; clients **SHOULD** surface these states separately.
+
 | Profile       | ICE behavior                                                                                          |
 | ------------- | ----------------------------------------------------------------------------------------------------- |
-| **Strict**    | Host + srflx via peer reflexive; relay **only** via libp2p circuit relay to other Vibe peers          |
-| **Pragmatic** | Above plus optional user-configured STUN servers; optional **self-hosted** TURN (disabled by default) |
+| **Strict**    | Host + srflx; **community-catalog** STUN/TURN (§9.5); libp2p circuit relay via catalog or peer relay |
+| **Pragmatic** | Same catalog **enabled by default**; user **MAY** add additional OSS or self-hosted STUN/TURN       |
 
-- Public STUN in Pragmatic profile **MUST** be user-enabled (non-empty list). Default install **MUST NOT** hardcode third-party STUN URLs.
+- Default Pragmatic install **MUST** enable the community catalog STUN/TURN entries (§9.5.3).
+- Default install **MUST NOT** enable proprietary or non-catalog third-party endpoints (e.g. closed-source TURN APIs, proprietary STUN such as `stun.l.google.com`).
+
+### 9.5 Community Network Helpers
+
+Community network helpers are publicly operated endpoints running **free/open-source, self-hostable** server software. They assist connectivity but are not Vibe-operated infrastructure.
+
+#### 9.5.1 Eligibility Criteria
+
+A catalog entry **MUST** satisfy all of the following:
+
+1. **FOSS software** — The server runs software with a public source repository and an OSI-approved or equivalent open license (e.g. [coturn](https://github.com/coturn/coturn) for STUN/TURN, libp2p for relay/rendezvous).
+2. **Self-hostable** — Any operator **MAY** deploy an equivalent instance from that source without proprietary dependencies.
+3. **Community-operated** — The endpoint is operated by a third party, not the Vibe project.
+4. **Catalog-listed** — The entry appears in the **Vibe community catalog** with at minimum: `id`, `kind` (`stun` | `turn` | `libp2p-relay` | `libp2p-rendezvous`), `urls`, and for TURN: `username`/`credential` or a documented credential scheme (e.g. TURN REST). Informative fields **SHOULD** include `software`, `license`, `sourceUrl`, `operator`, and `privacyUrl`.
+5. **No proprietary defaults** — Implementations **MUST NOT** add closed-source relay services to the default catalog.
+
+#### 9.5.2 Catalog vs User Overrides
+
+- The default catalog **MUST** ship with the reference client (embedded JSON or bootstrap constants).
+- Active helpers are stored in app data as `network-helpers.json` with fields: `relayPeers`, `rendezvousPeers`, `stunServers`, `turnServers`.
+- **Pragmatic**: user edits **MAY** merge with or override catalog entries; custom OSS or self-hosted endpoints beyond the catalog are allowed.
+- **Strict**: only catalog entries **MUST** be honored; user-supplied `stunServers`, `turnServers`, `relayPeers`, or `rendezvousPeers` **MUST NOT** be applied if they are not in the catalog.
+
+#### 9.5.3 Default Catalog (Pragmatic Factory Install)
+
+The reference client **MUST** ship with at least the following enabled STUN/TURN entries in Pragmatic profile:
+
+| Kind | Endpoint (informative) | Notes |
+| ---- | ---------------------- | ----- |
+| STUN | `stun:stun.relay.metered.ca:80` | coturn STUN; OSS alternative to proprietary STUN |
+| TURN | [Open Relay](https://www.metered.ca/tools/openrelay/) — `turn:openrelay.metered.ca:80`, `turn:openrelay.metered.ca:443`, `turn:openrelay.metered.ca:443?transport=tcp`; username/credential `openrelayproject` | coturn-based community relay; clients **SHOULD** document rate/abuse limits in UX |
+| libp2p relay | *(none in v1)* | Catalog slot reserved; entries added when community relays are vetted |
+| libp2p rendezvous | *(none in v1)* | Catalog slot reserved; entries added when community servers are vetted |
+
+Informative example (see also §B.4):
+
+```json
+{
+  "catalogVersion": 1,
+  "stunServers": ["stun:stun.relay.metered.ca:80"],
+  "turnServers": [{
+    "urls": [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:443?transport=tcp"
+    ],
+    "username": "openrelayproject",
+    "credential": "openrelayproject"
+  }]
+}
+```
+
+#### 9.5.4 Operational Requirements
+
+- Clients **MUST** disclose which catalog entries are active before the first call or cross-network message attempt on a new network.
+- Clients **MUST** log locally (not transmit) when a community helper is used for a given operation.
+- Changing active helpers **MUST** invalidate any ICE server cache and recycle existing `RTCPeerConnection` instances on the next connection attempt.
+
+#### 9.5.5 Privacy and Trust
+
+- Community TURN operators can observe connection **metadata** (IP addresses, ports, timing, bandwidth). Media and application payloads remain protected by DTLS-SRTP and session encryption respectively.
+- Clients **SHOULD** link to self-hosting documentation (e.g. coturn) in network settings or help text.
+- Users **MAY** disable catalog TURN entries or self-host coturn if they do not trust a community operator.
 
 ---
 
@@ -342,29 +415,31 @@ Vibe defines two network profiles. The active profile **MUST** be visible in set
 
 ### 11.1 Comparison
 
-| Capability                                | Strict             | Pragmatic                             |
-| ----------------------------------------- | ------------------ | ------------------------------------- |
-| Public STUN servers                       | **MUST NOT** use   | **MAY** use user-configured list      |
-| Third-party IPFS HTTP gateway (read-only) | **MUST NOT** use   | **MAY** use user-configured URLs      |
-| Remote IPFS pinners                       | **MUST NOT** use   | **MAY** use user-configured endpoints |
-| libp2p circuit relay via other Vibe peers | Allowed            | Allowed                               |
-| Vibe-operated servers                     | **MUST NOT** exist | **MUST NOT** exist                    |
+| Capability                                      | Strict                          | Pragmatic                              |
+| ----------------------------------------------- | ------------------------------- | -------------------------------------- |
+| Community OSS STUN/TURN (catalog, §9.5)           | Allowed (same entries)          | Allowed, **enabled by default**          |
+| Custom STUN/TURN beyond catalog                 | **MUST NOT**                    | **MAY**                                |
+| Custom libp2p relay/rendezvous beyond catalog     | **MUST NOT**                    | **MAY**                                |
+| Third-party IPFS HTTP gateway (read-only)         | **MUST NOT** use                | **MAY** use user-configured URLs       |
+| Remote IPFS pinners                               | **MUST NOT** use                | **MAY** use user-configured endpoints  |
+| libp2p circuit relay via other Vibe peers         | Allowed                         | Allowed                                |
+| Vibe-operated servers                             | **MUST NOT** exist              | **MUST NOT** exist                     |
 
 ### 11.2 Default Behavior
 
-- Factory default profile: **Pragmatic** with empty STUN, gateway, and pinner lists (behaves similarly to Strict until the user adds helpers).
-- Implementations **MUST** log (locally, not transmit) when Pragmatic helpers are used for a given operation.
+- Factory default profile: **Pragmatic** with the community STUN/TURN catalog **enabled** (§9.5.3); IPFS gateway and pinner lists empty.
+- Implementations **MUST** log (locally, not transmit) when community or custom helpers are used for a given operation.
 
 ### 11.3 Strict Profile Requirements
 
 - All IPFS retrieval **MUST** occur over libp2p/bitswap from peers.
-- NAT traversal **MUST** rely on host candidates, UDP hole punching, and libp2p relay only.
-- Clients **SHOULD** surface connectivity guidance when Strict mode fails behind symmetric NAT.
+- Only **catalog** network helpers **MAY** be used for STUN, TURN, libp2p relay, and rendezvous; custom third-party endpoints **MUST NOT** be honored.
+- Clients **SHOULD** surface connectivity guidance when connections fail behind symmetric NAT even with catalog TURN.
 
 ### 11.4 Pragmatic Profile Requirements
 
-- User-configured STUN **MUST** be editable and clearable.
-- TURN, if used, **MUST** be URL and credentials supplied by the user (self-hosted). Default TURN **MUST NOT** ship with the app.
+- Community catalog STUN/TURN **MUST** be toggleable; user-added STUN/TURN **MUST** be editable and clearable.
+- Custom TURN beyond the catalog **MUST** run OSS server software or be self-hosted by the user.
 - Remote pinners **MUST NOT** receive decryption keys; they store ciphertext only.
 
 ---
@@ -479,7 +554,7 @@ Any client implementing `vibe/*` schemas, §6 crypto, §9 signaling, and §8 Web
 | ------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | **M0** | Tauri shell; root identity; libp2p connect; Noise handshake; 1:1 text over WebRTC data channel | Two clients exchange encrypted text with no central server               |
 | **M1** | 1:1 voice/video; `vibe/profile/1` on IPFS; `vibe/attachment/1`                                 | Verified profile CID; completed voice call; file round-trip via CID      |
-| **M2** | Groups (text); Sender Keys; Strict/Pragmatic settings UI; group manifest                       | 5-member group text; profile toggle affects STUN behavior                |
+| **M2** | Groups (text); Sender Keys; Strict/Pragmatic settings UI; group manifest                       | 5-member group text; catalog toggles, custom helpers (Pragmatic), helper-change reconnect |
 | **M3** | Optional `vibe/history/1` on IPFS; Double Ratchet for async 1:1; multi-device (Appendix A.4)   | Offline message delivery after reconnect; second device receives history |
 
 Dependencies: M1 depends on M0; M2 depends on M0; M3 depends on M1 and M2.
@@ -507,7 +582,8 @@ The following appendices provide schemas, glossary, references, and open impleme
 | **Pubsub**      | Gossipsub topic-based broadcast on libp2p                    |
 | **SDP**         | Session Description Protocol for WebRTC negotiation          |
 | **Sender Keys** | Per-sender symmetric chain for group encryption (v1)         |
-| **STUN/TURN**   | NAT discovery / relay protocols (Pragmatic, user-controlled) |
+| **STUN/TURN**   | NAT discovery / relay protocols; community OSS catalog (§9.5); enabled by default in Pragmatic |
+| **Community Network Helper** | Public OSS, self-hostable endpoint (STUN, TURN, libp2p relay/rendezvous) listed in the Vibe community catalog |
 
 ### A.2 Example Profile (`vibe/profile/1`)
 
@@ -568,6 +644,8 @@ On wire, implementations **SHOULD** use canonical CBOR; JSON above is illustrati
 - [RFC 9420 — MLS](https://www.rfc-editor.org/rfc/rfc9420) (future group crypto)
 - [Noise Protocol Framework](https://noiseprotocol.org/)
 - [Tauri](https://tauri.app/) — cross-platform client shell
+- [coturn](https://github.com/coturn/coturn) — reference OSS STUN/TURN server
+- [Metered Open Relay](https://www.metered.ca/tools/openrelay/) — community coturn TURN (informative default)
 
 ### B.2 Constants
 
@@ -586,6 +664,32 @@ On wire, implementations **SHOULD** use canonical CBOR; JSON above is illustrati
 3. **Topic privacy** — whether v2 should use encrypted topic names derived from `conversation_id`.
 4. **Sealed sender** — whether pubsub envelopes should hide `sender_peer_id` from non-members on encrypted topics.
 5. **Bootstrap list governance** — community signing keys and update cadence for default bootstrap peers.
+6. **Community catalog governance** — signing keys, vetting process, and update cadence for default STUN/TURN/relay entries (parallel to bootstrap list).
+
+### B.4 Default Community Catalog (Informative)
+
+Reference v1 catalog entries for WebRTC NAT traversal:
+
+| Field | Value |
+| ----- | ----- |
+| **STUN** | `stun:stun.relay.metered.ca:80` |
+| **TURN URLs** | `turn:openrelay.metered.ca:80`, `turn:openrelay.metered.ca:443`, `turn:openrelay.metered.ca:443?transport=tcp` |
+| **TURN credentials** | username `openrelayproject`, credential `openrelayproject` (static; community free tier) |
+| **Server software** | [coturn](https://github.com/coturn/coturn) (BSD-3-Clause) |
+| **Operator docs** | [openrelay.metered.ca](https://www.metered.ca/tools/openrelay/) |
+
+Optional informative metadata (not required on the `network-helpers.json` wire):
+
+```json
+{
+  "meta": {
+    "software": "coturn",
+    "sourceUrl": "https://github.com/coturn/coturn",
+    "operator": "Metered.ca (community free tier)",
+    "docsUrl": "https://www.metered.ca/tools/openrelay/"
+  }
+}
+```
 
 ---
 
@@ -593,6 +697,7 @@ On wire, implementations **SHOULD** use canonical CBOR; JSON above is illustrati
 
 | Version       | Date       | Changes       |
 | ------------- | ---------- | ------------- |
+| `0.2.0-draft` | 2026-06-11 | Community network helpers (§9.5); OSS STUN/TURN catalog with Open Relay defaults; Strict/Pragmatic profile clarification |
 | `0.1.0-draft` | 2026-06-04 | Initial draft |
 
 ---
