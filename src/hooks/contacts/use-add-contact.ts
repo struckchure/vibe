@@ -8,7 +8,11 @@ import type { UseAddContactProps } from "./types";
 export function useAddContact() {
   return useMutation({
     mutationFn: async (props: UseAddContactProps) => {
-      await api.addContact(props.peerId, props.displayName);
+      await api.addContact(
+        props.peerId,
+        props.displayName,
+        props.dialAddrs,
+      );
     },
   });
 }

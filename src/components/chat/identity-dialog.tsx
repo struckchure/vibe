@@ -167,7 +167,8 @@ export function IdentityDialog({
               </Button>
             </div>
             <FieldDescription>
-              Scan the QR or share your public key so others can add you.
+              Scan the QR or share your public key so others can add you. Open
+              chat on both sides to connect automatically.
             </FieldDescription>
           </Field>
 

@@ -30,10 +30,10 @@ function RouteComponent() {
 
   return (
     <div className="h-full w-full">
-      {noneReachable && overlayPeers === 0 && (
+      {noneReachable && overlayPeers === 0 && hasContacts && (
         <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
-          No connected libp2p peers yet. Open a mutual contact&apos;s chat to
-          auto-connect once you are overlay peers.
+          Open a contact&apos;s chat on both devices to connect automatically
+          via trackers or the libp2p overlay.
         </p>
       )}
 

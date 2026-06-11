@@ -1,5 +1,10 @@
 import { handleOrphanIce, handlePeerIce, handleTextSignaling } from "./peer-connection";
-import { registerSignalingRoutes } from "./signaling";
+import { ingestSignalingWire, registerSignalingRoutes } from "./signaling";
+import { setTrackerWireHandler } from "./tracker-signaling";
+
+setTrackerWireHandler((remotePeerId, conversationId, wire) => {
+  ingestSignalingWire(remotePeerId, conversationId, wire);
+});
 
 registerSignalingRoutes({
   onText: handleTextSignaling,

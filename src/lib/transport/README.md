@@ -11,7 +11,8 @@ For platform-level architecture, see [ARCHITECTURE.md](../../../ARCHITECTURE.md)
 | File | Role |
 |------|------|
 | `types.ts` | Signaling message types, envelope shapes, call/text discriminated unions |
-| `signaling.ts` | `vibe/signal` DC when open; else gossipsub via Rust overlay, encrypt/decrypt via Tauri |
+| `signaling.ts` | `vibe/signal` DC when open; else tracker tunnel or gossipsub, encrypt/decrypt via Tauri |
+| `tracker-signaling.ts` | WebTorrent `wss://` tracker client per conversation; primary signaling tunnel |
 | `noise-handshake.ts` | Noise XX over `vibe/noise` data channel |
 | `wire.ts` | Data channel bytes and message ingest |
 | `rtc-utils.ts` | SDP helpers, channel labels, polite/impolite role |
@@ -31,14 +32,17 @@ For platform-level architecture, see [ARCHITECTURE.md](../../../ARCHITECTURE.md)
 **Primary (auto-connect):**
 
 1. Add contact via QR (`vibe://peer/…`), deep link, or pasted peer ID.
-2. Establish a **libp2p TCP connection** to the contact (explicit `dial_contact` multiaddrs or inbound dial).
-3. Open the contact's chat on both sides → `useAutoConnect` runs `ensureTextTransport` when the contact is a connected overlay peer.
-4. Impolite peer (higher peer ID) publishes an SDP offer on gossipsub `vibe/signal/<conversation_id>`; polite peer answers.
-5. After WebRTC connects → Noise XX on `vibe/noise`, then chat on `vibe/text`.
+2. Open the contact's chat on **both** sides.
+3. **WebTorrent trackers** ([`tracker-signaling.ts`](tracker-signaling.ts)): announce to `infoHash` derived from `conversation_id`; tracker matches peers; encrypted signaling over tracker WebRTC tunnel.
+4. `useAutoConnect` runs `ensureTextTransport` when tracker tunnel or libp2p overlay is ready.
+5. Impolite peer (higher peer ID) publishes SDP offer; polite peer answers (via tracker tunnel, signal DC, or gossipsub).
+6. After WebRTC connects → Noise XX on `vibe/noise`, then chat on `vibe/text`.
+
+**Signaling publish priority:** `vibe/signal` data channel → tracker tunnel → libp2p gossipsub.
 
 **Fallback:** Advanced → manual `vibe://connect` links — see [`connect-uri.ts`](../connect-uri.ts) and [`connect-handler.ts`](../connect-handler.ts).
 
-No LAN/mDNS, bootstrap, relay, or DHT in the overlay — gossipsub only among **connected** libp2p peers.
+Tracker catalog: [`tracker-config.ts`](../tracker-config.ts). libp2p fallback: [`bootstrap.rs`](../../../src-tauri/src/bootstrap.rs).
 
 ## Data flow (text)
 
@@ -91,7 +95,7 @@ React bindings: `useTextChat`, `useVoiceChat`, `useVideoChat` in `src/hooks/`.
 
 ## ICE / TURN
 
-STUN/TURN servers are configured in `src/lib/ice-config.ts` (Metered community catalog). Rust no longer runs libp2p or serves ICE config — storage and crypto only.
+STUN/TURN servers are configured in `src/lib/ice-config.ts` (Metered community catalog). Rust runs libp2p (gossipsub, relay, rendezvous) for overlay signaling; WebRTC ICE uses the frontend catalog.
 
 ## Rust responsibilities
 

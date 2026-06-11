@@ -8,6 +8,19 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  define: {
+    global: "globalThis",
+  },
+  resolve: {
+    alias: {
+      buffer: "buffer",
+      events: "events",
+      process: "process/browser",
+    },
+  },
+  optimizeDeps: {
+    include: ["buffer", "events", "process/browser", "bittorrent-tracker"],
+  },
   plugins: [
     tailwindcss(),
     // Please make sure that '@tanstack/router-plugin' is passed before '@vitejs/plugin-react'

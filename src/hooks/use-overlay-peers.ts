@@ -3,6 +3,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import * as api from "@/lib/tauri";
 
 let overlayPeerCount = 0;
+const connectedPeers = new Set<string>();
 const listeners = new Set<() => void>();
 let started = false;
 
@@ -23,6 +24,13 @@ function subscribe(listener: () => void) {
     })();
     void api.onOverlayPeersChanged((count) => {
       overlayPeerCount = count;
+      if (count === 0) {
+        connectedPeers.clear();
+      }
+      notify();
+    });
+    void api.onOverlayPeerConnected((peerId) => {
+      connectedPeers.add(peerId);
       notify();
     });
   }
@@ -39,21 +47,50 @@ export function useOverlayPeers(): number {
 
 export function useContactOverlayConnected(peerId: string | undefined): boolean {
   const overlayCount = useOverlayPeers();
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(
+    () => (peerId ? connectedPeers.has(peerId) : false),
+  );
 
   useEffect(() => {
-    if (!peerId || overlayCount === 0) {
+    if (!peerId) {
       setConnected(false);
       return;
     }
+
+    if (connectedPeers.has(peerId)) {
+      setConnected(true);
+      return;
+    }
+
     let cancelled = false;
-    void api.isOverlayPeerConnected(peerId).then((next) => {
-      if (!cancelled) {
-        setConnected(next);
+    const poll = () => {
+      void api.isOverlayPeerConnected(peerId).then((next) => {
+        if (!cancelled) {
+          if (next) {
+            connectedPeers.add(peerId);
+          } else {
+            connectedPeers.delete(peerId);
+          }
+          setConnected(next);
+        }
+      });
+    };
+
+    poll();
+    const interval =
+      overlayCount > 0 ? setInterval(poll, 2000) : undefined;
+
+    const pending = api.onOverlayPeerConnected((id) => {
+      if (id === peerId) {
+        connectedPeers.add(peerId);
+        setConnected(true);
       }
     });
+
     return () => {
       cancelled = true;
+      if (interval) clearInterval(interval);
+      void pending.then((unlisten) => unlisten());
     };
   }, [peerId, overlayCount]);
 

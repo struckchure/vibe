@@ -14,14 +14,15 @@ export function usePeerInviteDeepLink() {
 
   useEffect(() => {
     function handleUrl(url: string) {
-      const peerId = parsePeerInviteUrl(url);
-      if (!peerId || processed.current.has(peerId)) return;
-      processed.current.add(peerId);
+      const invite = parsePeerInviteUrl(url);
+      if (!invite || processed.current.has(invite.peerId)) return;
+      processed.current.add(invite.peerId);
 
       addContactMutation.mutate(
         {
-          peerId,
-          displayName: `Contact ${peerId.slice(0, 8)}`,
+          peerId: invite.peerId,
+          displayName: `Contact ${invite.peerId.slice(0, 8)}`,
+          dialAddrs: invite.dialAddrs.length > 0 ? invite.dialAddrs : undefined,
         },
         {
           onSuccess: () => {
@@ -29,7 +30,7 @@ export function usePeerInviteDeepLink() {
             queryClient.invalidateQueries({ queryKey: contactKeys.all });
           },
           onError: () => {
-            processed.current.delete(peerId);
+            processed.current.delete(invite.peerId);
           },
         },
       );

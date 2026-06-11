@@ -19,7 +19,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { useAddContact } from "@/hooks/contacts";
-import { parsePeerId } from "@/lib/peer-id";
+import { parsePeerInvite } from "@/lib/peer-id";
 import { contactKeys } from "@/lib/query-keys";
 
 type DiscoveryDialogsProps = {
@@ -38,14 +38,15 @@ export function DiscoveryDialogs({
   const [displayNameInput, setDisplayNameInput] = useState("");
 
   function handleAddContact() {
-    const peerId = parsePeerId(peerIdInput);
+    const invite = parsePeerInvite(peerIdInput);
+    const peerId = invite?.peerId;
     const displayName =
       displayNameInput.trim() ||
       (peerId ? `Contact ${peerId.slice(0, 8)}` : "");
     if (!peerId) return;
 
     addContactMutation.mutate(
-      { peerId, displayName },
+      { peerId, displayName, dialAddrs: invite?.dialAddrs },
       {
         onSuccess: () => {
           toast.success("Contact added");
@@ -75,9 +76,8 @@ export function DiscoveryDialogs({
               className="font-mono text-xs"
             />
             <FieldDescription>
-              Share your QR from Identity, or open a vibe://peer link. After
-              adding each other, use Connect in the chat to share vibe://connect
-              links (offer, then answer link back).
+              Share your Identity QR or open a vibe://peer link. Add each other,
+              then open chat on both devices to connect automatically.
             </FieldDescription>
           </Field>
           <Field>

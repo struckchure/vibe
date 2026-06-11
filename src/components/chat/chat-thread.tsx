@@ -102,7 +102,13 @@ export function ChatThread({ id }: ChatThreadProps) {
     ? (textChat.messagesByPeer[contact.peerId] ?? [])
     : [];
   const callBusy = voice.isBusy || video.isBusy;
-  const autoConnectPhase = useAutoConnect(contact, localPeerIdQuery.data);
+  const {
+    phase: autoConnectPhase,
+    retryAttempt,
+    maxRetries,
+  } = useAutoConnect(contact, localPeerIdQuery.data);
+  const retryBanner =
+    retryAttempt > 1 ? `Retrying… (${retryAttempt}/${maxRetries}) — ` : "";
   const channelOpen =
     !!contact &&
     (textChat.isChannelOpen({ contact }) || isTextChannelOpen(contact.peerId));
@@ -177,21 +183,26 @@ export function ChatThread({ id }: ChatThreadProps) {
 
   return (
     <div className="flex h-full flex-col">
-      {!channelOpen && autoConnectPhase === "waiting_overlay" && (
-        <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
-          Waiting for {contact.displayName} on the libp2p overlay — open this chat
-          on both devices once you are connected peers.
+      {!channelOpen && autoConnectPhase === "waiting_signaling" && (
+          <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
+            Waiting for {contact.displayName} to come online…
+          </p>
+        )}
+      {!channelOpen && autoConnectPhase === "unreachable" && (
+        <p className="shrink-0 border-b bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-800 dark:text-amber-200">
+          Can&apos;t reach {contact.displayName} — check network or use Advanced
+          → manual connect.
         </p>
       )}
       {!channelOpen && autoConnectPhase === "connecting" && (
         <p className="shrink-0 border-b bg-primary/10 px-4 py-2 text-center text-xs text-primary">
-          Connecting to {contact.displayName}…
+          {retryBanner}Setting up secure connection…
         </p>
       )}
       {!channelOpen && autoConnectPhase === "idle" && (
         <p className="shrink-0 border-b bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-800 dark:text-amber-200">
           Not connected — messages queue until the data channel is open. Use
-          Advanced → manual connect link if overlay connect does not work.
+          Advanced → manual connect if auto-connect does not work.
         </p>
       )}
       <header

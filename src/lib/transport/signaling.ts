@@ -1,5 +1,10 @@
 import * as api from "@/lib/tauri";
 
+import {
+  isTrackerSignalingReady,
+  publishOnTrackerTunnel,
+} from "./tracker-signaling";
+
 import type {
   CallSignalingMessage,
   SignalingEnvelope,
@@ -165,6 +170,11 @@ async function publishEncryptedSignaling(
     return;
   }
 
+  if (isTrackerSignalingReady(conversationId)) {
+    await publishOnTrackerTunnel(conversationId, encrypted, waitForDelivery);
+    return;
+  }
+
   const connected = await api.isOverlayPeerConnected(remotePeerId);
   if (!connected) {
     throw new Error("contact is not a connected libp2p peer");
@@ -248,6 +258,14 @@ export function teardownConversationSignaling(conversationId: string) {
     unlisten();
     signalingUnlistenByConversation.delete(conversationId);
   }
+}
+
+export function ingestSignalingWire(
+  remotePeerId: string,
+  conversationId: string,
+  wirePayload: string,
+) {
+  void dispatchSignaling(remotePeerId, conversationId, wirePayload);
 }
 
 async function dispatchSignaling(

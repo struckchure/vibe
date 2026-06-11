@@ -20,6 +20,8 @@ pub struct ContactRow {
     pub last_message_at: Option<i64>,
     #[serde(default)]
     pub unread_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dial_addrs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +185,7 @@ impl EphemeralStore {
         peer_id: &str,
         display_name: &str,
         conversation_id: &str,
+        dial_addrs: &[String],
     ) -> Result<ContactRow> {
         let row = ContactRow {
             peer_id: peer_id.to_string(),
@@ -191,12 +194,32 @@ impl EphemeralStore {
             last_message: None,
             last_message_at: None,
             unread_count: 0,
+            dial_addrs: dial_addrs.to_vec(),
         };
         self.contacts.insert(peer_id.to_string(), row.clone());
         self.messages.entry(peer_id.to_string()).or_default();
         self.save_contacts()?;
         self.save_messages(peer_id)?;
         Ok(row)
+    }
+
+    pub fn update_contact_dial_addrs(
+        &mut self,
+        peer_id: &str,
+        dial_addrs: Vec<String>,
+    ) -> Result<ContactRow> {
+        if dial_addrs.is_empty() {
+            return self.get_contact(peer_id);
+        }
+        {
+            let row = self
+                .contacts
+                .get_mut(peer_id)
+                .ok_or_else(|| anyhow!("contact not found"))?;
+            row.dial_addrs = dial_addrs;
+        }
+        self.save_contacts()?;
+        self.get_contact(peer_id)
     }
 
     pub fn get_contact(&self, peer_id: &str) -> Result<ContactRow> {

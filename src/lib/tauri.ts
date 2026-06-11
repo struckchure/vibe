@@ -10,6 +10,7 @@ export type Contact = {
   lastMessage: string | null;
   lastMessageAt: number | null;
   unreadCount: number;
+  dialAddrs?: string[];
 };
 
 export type IdentityInfo = {
@@ -71,10 +72,32 @@ export async function dialContact(addrs: string[]): Promise<void> {
   return await invoke("dial_contact", { addrs });
 }
 
+export async function getOverlayListenAddrs(): Promise<string[]> {
+  return await invoke<string[]>("get_overlay_listen_addrs");
+}
+
+export async function updateContactDialAddrs(
+  peerId: string,
+  dialAddrs: string[],
+): Promise<Contact> {
+  return await invoke<Contact>("update_contact_dial_addrs", {
+    peerId,
+    dialAddrs,
+  });
+}
+
 export function onOverlayPeersChanged(
   handler: (count: number) => void,
 ): Promise<() => void> {
   return listen<number>("overlay-peers-changed", (e) => handler(e.payload));
+}
+
+export function onOverlayPeerConnected(
+  handler: (peerId: string) => void,
+): Promise<() => void> {
+  return listen<{ peerId: string }>("overlay-peer-connected", (e) =>
+    handler(e.payload.peerId),
+  );
 }
 
 export async function publishSignaling(
@@ -106,8 +129,13 @@ export function onSignaling(
 export async function addContact(
   peerId: string,
   displayName: string,
+  dialAddrs?: string[],
 ): Promise<Contact> {
-  return await invoke<Contact>("add_contact", { peerId, displayName });
+  return await invoke<Contact>("add_contact", {
+    peerId,
+    displayName,
+    dialAddrs: dialAddrs ?? [],
+  });
 }
 
 export async function listContacts(): Promise<Contact[]> {

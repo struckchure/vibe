@@ -21,6 +21,7 @@ import {
   waitForIceGathering,
 } from "./rtc-utils";
 import type { SendTextResult, TextSignalingMessage } from "./types";
+import { isTrackerSignalingReady } from "./tracker-signaling";
 import { ingestDataChannelMessage, sendViaDataChannel } from "./wire";
 import * as api from "@/lib/tauri";
 
@@ -412,7 +413,10 @@ export async function ensureTextTransport(
   if (textTransportPaused) {
     return;
   }
-  if (!(await api.isOverlayPeerConnected(remotePeerId))) {
+  const canSignal =
+    isTrackerSignalingReady(conversationId) ||
+    (await api.isOverlayPeerConnected(remotePeerId));
+  if (!canSignal) {
     return;
   }
 
@@ -423,7 +427,9 @@ export async function ensureTextTransport(
   );
   const { pc, polite } = state;
 
-  if (!polite && pc.signalingState === "stable" && !state.channel) {
+  // Impolite peer must send the initial offer. Channels are created in
+  // createPeerConnection, so do not gate on !state.channel (that blocks offers).
+  if (!polite && pc.signalingState === "stable" && !pc.localDescription) {
     createPeerChannels(state);
     state.makingOffer = true;
     try {
@@ -433,6 +439,7 @@ export async function ensureTextTransport(
         type: "offer",
         sdp: offer,
       });
+      await flushPendingLocalIce(remotePeerId);
     } finally {
       state.makingOffer = false;
     }
@@ -537,9 +544,12 @@ export async function handleTextSignaling(
         type: "answer",
         sdp: answer,
       });
+      await flushPendingIce(state);
+      await flushPendingLocalIce(remotePeerId);
     } else if (msg.type === "answer" && msg.sdp) {
       if (state.ignoreOffer) return;
       await pc.setRemoteDescription(msg.sdp);
+      await flushPendingIce(state);
     } else if (msg.type === "ice" && msg.candidate) {
       if (state.ignoreOffer) return;
       await addIceCandidate(pc, getInboundIce(remotePeerId), msg.candidate);

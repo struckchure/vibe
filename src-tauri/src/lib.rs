@@ -1,3 +1,4 @@
+mod bootstrap;
 mod crypto;
 mod identity;
 mod network;
@@ -199,6 +200,7 @@ fn add_contact(
     state: State<'_, AppState>,
     peer_id: String,
     display_name: String,
+    dial_addrs: Option<Vec<String>>,
 ) -> Result<ContactRow, String> {
     let local = state.with_identity(|id| *id.verifying_key.as_bytes());
     let remote = Identity::peer_id_from_b64(&peer_id).map_err(|e| e.to_string())?;
@@ -206,17 +208,44 @@ fn add_contact(
         return Err("cannot add yourself".into());
     }
     let conv_id = conversation_id(&local, &remote);
-    let row = state
-        .store
-        .lock()
-        .add_contact(&peer_id, &display_name, &conv_id)
-        .map_err(|e| e.to_string())?;
+    let addrs = dial_addrs.unwrap_or_default();
+    let row = {
+        let mut store = state.store.lock();
+        if store.get_contact(&peer_id).is_ok() && !addrs.is_empty() {
+            store
+                .update_contact_dial_addrs(&peer_id, addrs)
+                .map_err(|e| e.to_string())?
+        } else {
+            store
+                .add_contact(&peer_id, &display_name, &conv_id, &addrs)
+                .map_err(|e| e.to_string())?
+        }
+    };
     state.network.start().map_err(|e| e.to_string())?;
     state
         .network
         .subscribe_conversation(&conv_id)
         .map_err(|e| e.to_string())?;
     Ok(row)
+}
+
+#[tauri::command]
+fn update_contact_dial_addrs(
+    state: State<'_, AppState>,
+    peer_id: String,
+    dial_addrs: Vec<String>,
+) -> Result<ContactRow, String> {
+    state
+        .store
+        .lock()
+        .update_contact_dial_addrs(&peer_id, dial_addrs)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_overlay_listen_addrs(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    state.network.start().map_err(|e| e.to_string())?;
+    Ok(state.network.get_listen_addrs())
 }
 
 #[tauri::command]
@@ -622,7 +651,9 @@ pub fn run() {
             subscribe_conversation,
             overlay_peer_count,
             is_overlay_peer_connected,
+            get_overlay_listen_addrs,
             dial_contact,
+            update_contact_dial_addrs,
             publish_signaling,
         ])
         .run(tauri::generate_context!())

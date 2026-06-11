@@ -27,6 +27,8 @@ libp2p = { version = "0.54", features = [
   "yamux",
   "macros",
   "identify",
+  "relay",
+  "rendezvous",
 ] }
 tauri-plugin-deep-link = "2"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
