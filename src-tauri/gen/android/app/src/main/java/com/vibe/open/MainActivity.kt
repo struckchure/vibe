@@ -10,6 +10,12 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    KeepAliveService.start(this)
+  }
+
+  override fun onDestroy() {
+    KeepAliveService.stop(this)
+    super.onDestroy()
   }
 
   override fun onWebViewCreate(webView: WebView) {

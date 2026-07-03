@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use libp2p::gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode};
 use libp2p::identify;
+use libp2p::mdns;
 use libp2p::multiaddr::Protocol;
 use libp2p::relay;
 use libp2p::rendezvous;
@@ -27,6 +28,7 @@ struct Behaviour {
     identify: identify::Behaviour,
     rendezvous: rendezvous::client::Behaviour,
     relay: relay::client::Behaviour,
+    mdns: mdns::tokio::Behaviour,
 }
 
 pub enum NetworkCommand {
@@ -468,6 +470,9 @@ async fn run_swarm(
 
     let rendezvous_client = rendezvous::client::Behaviour::new(local_key.clone());
 
+    let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)
+        .map_err(|e| anyhow!("mdns: {e}"))?;
+
     let mut swarm = SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
         .with_tcp(
@@ -475,12 +480,16 @@ async fn run_swarm(
             noise::Config::new,
             yamux::Config::default,
         )?
+        // Bootstrap/relay/rendezvous peers are /dnsaddr multiaddrs; without a
+        // DNS transport every overlay dial fails with "Multiaddr not supported".
+        .with_dns()?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(|_, relay| Behaviour {
             gossipsub,
             identify,
             rendezvous: rendezvous_client,
             relay,
+            mdns,
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -653,6 +662,15 @@ fn handle_behaviour_event(
         BehaviourEvent::Rendezvous(rendezvous::client::Event::Discovered { registrations, .. }) => {
             let expected: HashSet<PeerId> = active_conversations.values().copied().collect();
             dial_rendezvous_registrations(swarm, &registrations, &expected);
+        }
+        BehaviourEvent::Mdns(mdns::Event::Discovered(list)) => {
+            // Same-LAN peers connect directly with zero infrastructure; once a
+            // direct connection exists, gossipsub signaling flows between them.
+            for (_peer_id, addr) in list {
+                if let Err(e) = swarm.dial(addr) {
+                    eprintln!("mdns dial: {e}");
+                }
+            }
         }
         BehaviourEvent::Identify(identify::Event::Received { info, peer_id, .. }) => {
             if active_conversations.values().any(|p| *p == peer_id) {

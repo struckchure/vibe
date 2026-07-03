@@ -19,6 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { useListContacts } from "@/hooks/contacts";
+import { useKeeperContactPhase } from "@/hooks/use-connection-keeper";
 import { contactKeys } from "@/lib/query-keys";
 import * as api from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -41,6 +42,19 @@ function formatTime(ts?: number | null) {
 }
 
 const routeApi = getRouteApi("/_chat/");
+
+function ContactReachabilityDot({ conversationId }: { conversationId: string }) {
+  const phase = useKeeperContactPhase(conversationId);
+  if (phase !== "connected") {
+    return null;
+  }
+  return (
+    <span
+      className="size-2 shrink-0 rounded-full bg-emerald-500"
+      aria-label="Connected"
+    />
+  );
+}
 
 export function ChatList() {
   const { id } = routeApi.useSearch();
@@ -142,6 +156,7 @@ export function ChatList() {
                       </ItemDescription>
                     </ItemContent>
                     <div className="flex shrink-0 flex-col items-end gap-1">
+                      <ContactReachabilityDot conversationId={c.conversationId} />
                       {c.lastMessageAt && (
                         <span className="text-[10px] text-muted-foreground">
                           {formatTime(c.lastMessageAt)}

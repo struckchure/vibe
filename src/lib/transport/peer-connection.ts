@@ -33,6 +33,7 @@ export type PeerConnectionState = {
   polite: boolean;
   makingOffer: boolean;
   ignoreOffer: boolean;
+  lastOfferAt: number;
   channel: RTCDataChannel | null;
   signalChannel: RTCDataChannel | null;
   noiseChannel: RTCDataChannel | null;
@@ -254,6 +255,7 @@ async function createPeerConnection(
     polite,
     makingOffer: false,
     ignoreOffer: false,
+    lastOfferAt: 0,
     channel: null,
     signalChannel: null,
     noiseChannel: null,
@@ -361,7 +363,12 @@ export function isPeerConnected(peerId: string): boolean {
 }
 
 export function isTransportReady(peerId: string): boolean {
-  return isTextChannelOpen(peerId) || isPeerConnected(peerId);
+  // "connecting" must not count: a session stuck mid-ICE would report ready,
+  // which disables the keeper's retries and shows a false "connected" phase.
+  return (
+    isTextChannelOpen(peerId) ||
+    peers.get(peerId)?.pc.connectionState === "connected"
+  );
 }
 
 export function isTextChannelOpen(peerId: string): boolean {
@@ -401,6 +408,9 @@ export const subscribeTextChannelState = subscribeTransportState;
 
 let textTransportPaused = false;
 
+/** Re-send a pending offer if no answer arrived within this window. */
+const OFFER_STALL_MS = 8_000;
+
 export function setTextTransportPaused(paused: boolean) {
   textTransportPaused = paused;
 }
@@ -420,18 +430,34 @@ export async function ensureTextTransport(
     return;
   }
 
-  const state = await ensurePeerConnection(
+  let state = await ensurePeerConnection(
     localPeerId,
     remotePeerId,
     conversationId
   );
+
+  // A failed/closed session never recovers on its own; recycle it so a
+  // fresh offer can go out over the still-ready signaling path.
+  if (
+    state.pc.connectionState === "failed" ||
+    state.pc.connectionState === "closed" ||
+    state.pc.iceConnectionState === "failed"
+  ) {
+    closePeerConnection(remotePeerId);
+    state = await ensurePeerConnection(localPeerId, remotePeerId, conversationId);
+  }
+
   const { pc, polite } = state;
+  if (polite) {
+    return;
+  }
 
   // Impolite peer must send the initial offer. Channels are created in
   // createPeerConnection, so do not gate on !state.channel (that blocks offers).
-  if (!polite && pc.signalingState === "stable" && !pc.localDescription) {
+  if (pc.signalingState === "stable" && !pc.localDescription) {
     createPeerChannels(state);
     state.makingOffer = true;
+    state.lastOfferAt = Date.now();
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -442,6 +468,25 @@ export async function ensureTextTransport(
       await flushPendingLocalIce(remotePeerId);
     } finally {
       state.makingOffer = false;
+    }
+    return;
+  }
+
+  // Answer never arrived (offer or answer lost in transit): re-send the
+  // current offer. localDescription accumulates gathered ICE candidates, so
+  // this also recovers candidates whose best-effort publish was dropped.
+  if (
+    pc.signalingState === "have-local-offer" &&
+    pc.localDescription &&
+    Date.now() - state.lastOfferAt >= OFFER_STALL_MS
+  ) {
+    const sdp = sessionDescriptionPayload(pc.localDescription);
+    if (sdp) {
+      state.lastOfferAt = Date.now();
+      await publishSignalingMessage(conversationId, remotePeerId, {
+        type: "offer",
+        sdp,
+      });
     }
   }
 }

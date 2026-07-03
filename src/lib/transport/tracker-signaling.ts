@@ -36,7 +36,9 @@ export function setTrackerWireHandler(handler: TrackerWireHandler) {
 type TrackerSession = {
   conversationId: string;
   remotePeerId: string;
-  client: TrackerClientInstance;
+  /** Null while async setup is in flight. */
+  client: TrackerClientInstance | null;
+  destroyed: boolean;
   peers: BtTrackerPeer[];
   ready: boolean;
 };
@@ -92,6 +94,14 @@ function attachTrackerPeer(
   peer: BtTrackerPeer,
 ) {
   peer.on("connect", () => {
+    if (session.destroyed) {
+      try {
+        peer.destroy();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     if (!session.peers.includes(peer)) {
       session.peers.push(peer);
     }
@@ -128,34 +138,51 @@ export async function ensureTrackerSignaling(
     return;
   }
 
-  let Client: TrackerClientCtor;
-  try {
-    Client = await loadTrackerClient();
-  } catch (err) {
-    console.warn("failed to load bittorrent-tracker:", err);
-    return;
-  }
-
-  const [infoHash, trackerPeerId, iceServers] = await Promise.all([
-    infoHashFromConversationId(conversationId),
-    trackerPeerIdFromVibePeerId(localPeerId),
-    resolveIceServers(),
-  ]);
-
-  const client = new Client({
-    infoHash,
-    peerId: trackerPeerId,
-    announce: resolveTrackerUrls(),
-    rtcConfig: { iceServers },
-  });
-
+  // Reserve the key before any await so concurrent callers cannot spawn a
+  // second client whose ready-state would land on an orphaned session.
   const session: TrackerSession = {
     conversationId,
     remotePeerId,
+    client: null,
+    destroyed: false,
     peers: [],
     ready: false,
-    client,
   };
+  sessions.set(key, session);
+
+  let client: TrackerClientInstance;
+  try {
+    const Client = await loadTrackerClient();
+    const [infoHash, trackerPeerId, iceServers] = await Promise.all([
+      infoHashFromConversationId(conversationId),
+      trackerPeerIdFromVibePeerId(localPeerId),
+      resolveIceServers(),
+    ]);
+    client = new Client({
+      infoHash,
+      peerId: trackerPeerId,
+      announce: resolveTrackerUrls(),
+      rtcConfig: { iceServers },
+    });
+  } catch (err) {
+    console.warn("failed to start tracker signaling:", err);
+    if (sessions.get(key) === session) {
+      sessions.delete(key);
+    }
+    return;
+  }
+
+  if (session.destroyed || sessions.get(key) !== session) {
+    try {
+      client.stop();
+      client.destroy();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  session.client = client;
 
   client.on("peer", (peer: BtTrackerPeer) => {
     attachTrackerPeer(session, peer);
@@ -169,7 +196,6 @@ export async function ensureTrackerSignaling(
     console.warn("tracker warning:", err.message);
   });
 
-  sessions.set(key, session);
   client.start();
 }
 
@@ -202,9 +228,11 @@ export function teardownTrackerSignaling(conversationId: string): void {
     return;
   }
 
+  // If setup is still in flight, this flag makes it discard the client.
+  session.destroyed = true;
   try {
-    session.client.stop();
-    session.client.destroy();
+    session.client?.stop();
+    session.client?.destroy();
   } catch {
     /* ignore */
   }

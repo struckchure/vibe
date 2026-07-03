@@ -10,9 +10,6 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { useContactReachability } from "@/hooks/use-contact-reachability";
-import { useOverlayPeers } from "@/hooks/use-overlay-peers";
-import { useListContacts } from "@/hooks/contacts";
 
 export const Route = createFileRoute("/_chat/")({
   component: RouteComponent,
@@ -21,22 +18,10 @@ export const Route = createFileRoute("/_chat/")({
 
 function RouteComponent() {
   const { id } = Route.useSearch();
-  const listContactQuery = useListContacts();
-  const reachable = useContactReachability();
-  const overlayPeers = useOverlayPeers();
   const isDesktop = useMediaQuery("(min-width: 768px)");
-  const hasContacts = (listContactQuery.data?.length ?? 0) > 0;
-  const noneReachable = hasContacts && reachable.size === 0;
 
   return (
     <div className="h-full w-full">
-      {noneReachable && overlayPeers === 0 && hasContacts && (
-        <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
-          Open a contact&apos;s chat on both devices to connect automatically
-          via trackers or the libp2p overlay.
-        </p>
-      )}
-
       {isDesktop ? (
         <ResizablePanelGroup orientation="horizontal" className="h-full w-full">
           <ResizablePanel

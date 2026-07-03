@@ -4,7 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { CallShell } from "@/components/call/call-shell";
 import { ConnectAnswerDialog } from "@/components/chat/connect-answer-dialog";
+import { useAppLifecycle } from "@/hooks/use-app-lifecycle";
+import { useChatDeepLink } from "@/hooks/use-chat-deep-link";
 import { useConnectDeepLink } from "@/hooks/use-connect-deep-link";
+import { useConnectionKeeper } from "@/hooks/use-connection-keeper";
 import { useNetworkBootstrap } from "@/hooks/use-network-bootstrap";
 import { usePeerInviteDeepLink } from "@/hooks/use-peer-invite-deep-link";
 import { useTextChat } from "@/hooks/text-chat";
@@ -16,7 +19,10 @@ function AppNetworkHooks() {
   const queryClient = useQueryClient();
 
   useNetworkBootstrap();
+  useConnectionKeeper();
+  useAppLifecycle();
   usePeerInviteDeepLink();
+  useChatDeepLink();
   useConnectDeepLink();
   useTextChat({
     onIncoming: () => {

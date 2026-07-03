@@ -13,5 +13,6 @@ Numbered phases (`NNNN.md`) track incremental delivery. Each plan links to [SPEC
 | [0007.md](./0007.md) | superseded | Auto-connect via gossipsub (see 0008 for cross-NAT) |
 | [0008.md](./0008.md) | done | libp2p relay + rendezvous (fallback signaling) |
 | [0009.md](./0009.md) | done | WebTorrent tracker primary signaling (no copy/paste) |
+| [0010.md](./0010.md) | done | App-wide connection keeper + chat deep links |
 
 **Status values:** `planned` | `in_progress` | `done`

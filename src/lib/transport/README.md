@@ -32,11 +32,13 @@ For platform-level architecture, see [ARCHITECTURE.md](../../../ARCHITECTURE.md)
 **Primary (auto-connect):**
 
 1. Add contact via QR (`vibe://peer/…`), deep link, or pasted peer ID.
-2. Open the contact's chat on **both** sides.
+2. **App-wide keeper** ([`connection-keeper.ts`](../connection-keeper.ts)): on app open, announces on trackers and libp2p for **all contacts** — no need to keep a chat thread open.
 3. **WebTorrent trackers** ([`tracker-signaling.ts`](tracker-signaling.ts)): announce to `infoHash` derived from `conversation_id`; tracker matches peers; encrypted signaling over tracker WebRTC tunnel.
-4. `useAutoConnect` runs `ensureTextTransport` when tracker tunnel or libp2p overlay is ready.
+4. Keeper runs `ensureTextTransport` when tracker tunnel or libp2p overlay is ready.
 5. Impolite peer (higher peer ID) publishes SDP offer; polite peer answers (via tracker tunnel, signal DC, or gossipsub).
 6. After WebRTC connects → Noise XX on `vibe/noise`, then chat on `vibe/text`.
+
+Open a chat proactively via `vibe://chat/{conversationId}` ([`chat-deep-link.ts`](../chat-deep-link.ts)).
 
 **Signaling publish priority:** `vibe/signal` data channel → tracker tunnel → libp2p gossipsub.
 

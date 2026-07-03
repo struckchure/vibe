@@ -185,7 +185,7 @@ export function ChatThread({ id }: ChatThreadProps) {
     <div className="flex h-full flex-col">
       {!channelOpen && autoConnectPhase === "waiting_signaling" && (
           <p className="shrink-0 border-b bg-muted/50 px-4 py-2 text-center text-xs text-muted-foreground">
-            Waiting for {contact.displayName} to come online…
+            Waiting for {contact.displayName} to open this chat…
           </p>
         )}
       {!channelOpen && autoConnectPhase === "unreachable" && (
